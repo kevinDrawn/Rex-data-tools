@@ -1,0 +1,9 @@
+/build/
+/build-*/
+/logging/
+**/logging/
+*.exe
+*.obj
+*.pdb
+*.ilk
+imgui.ini
