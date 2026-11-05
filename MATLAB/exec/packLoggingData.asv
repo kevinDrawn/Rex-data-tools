@@ -1,0 +1,51 @@
+%PACKLOGGINGDATA Configure the input and mapping, then run the entire script.
+
+%% Input settings
+LOGGING_PATH = "D:\park\01. STEAM\[STEAM] Animal Experiment\20261103_4ch_EMG\#39\IE\logging\rex_live_20261103_164747_195.csv";
+PROJECT_TYPE = "Rex";
+
+% Empty: save beside the CSV with the same base name.
+% Alternatively, set the absolute destination .mat path.
+MAT_PATH = "";
+
+% Options passed to readtable. For a CSV without a header, use:
+% CSV_READ_OPTIONS = {'ReadVariableNames', false};
+CSV_READ_OPTIONS = {};
+
+%% Include classes relative to this script
+execDirectory = fileparts(mfilename('fullpath'));
+classDirectory = fullfile(fileparts(execDirectory), 'Class');
+addpath(classDirectory);
+
+%% Load the project's mapping structure and enter CSV column numbers
+packer = DataPacker(PROJECT_TYPE);
+columnMap = packer.getColumnMap();
+
+% REQUIRED: replace every NaN with the correct CSV column number (1-based).
+columnMap.Time = 1;
+columnMap.Left.Angle = 4;
+columnMap.Right.Angle = 5;
+columnMap.Assisted.Angle = 6;
+columnMap.Left.Torque = 8;
+columnMap.Right.Torque = 9;
+columnMap.Left.TA = 10;
+columnMap.Left.GM = 11;
+columnMap.Right.TA = 12;
+columnMap.Right.GM = 13;
+
+%% Pack and export
+if LOGGING_PATH == "[csv 파일 절대경로]" || strlength(LOGGING_PATH) == 0
+    error('packLoggingData:MissingPath', 'Set LOGGING_PATH to the absolute CSV path.');
+end
+if isempty(regexp(char(LOGGING_PATH), '^(?:[A-Za-z]:[\\/]|[\\/]{2}|/)', 'once'))
+    error('packLoggingData:RelativePath', 'LOGGING_PATH must be an absolute path.');
+end
+if strlength(MAT_PATH) == 0
+    [loggingDirectory, loggingName] = fileparts(LOGGING_PATH);
+    MAT_PATH = fullfile(loggingDirectory, loggingName + ".mat");
+end
+
+data = packer.pack(LOGGING_PATH, columnMap, CSV_READ_OPTIONS{:});
+packer.saveMat(data, MAT_PATH);
+fprintf('Saved %d samples to %s\n', numel(data.Time), char(MAT_PATH));
+
