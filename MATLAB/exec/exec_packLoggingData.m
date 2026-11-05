@@ -21,10 +21,10 @@ PLOT_TIME_RANGE = [234678 260000]; % Example: [1000 5000] if Time is in millisec
 PLOT_DIRECTION = "vertical"; % 'vertical': 4-by-1; 'horizontal': 1-by-4.
 
 %% Include classes relative to this script
-execDirectory = fileparts(mfilename('fullpath'));
+filePath = matlab.desktop.editor.getActiveFilename;
+execDirectory = fileparts(filePath);
 classDirectory = fullfile(fileparts(execDirectory), 'Class');
 addpath(classDirectory);
-
 %% Load the project's mapping structure and enter CSV column numbers
 packer = DataPacker(PROJECT_TYPE);
 columnMap = packer.getColumnMap();

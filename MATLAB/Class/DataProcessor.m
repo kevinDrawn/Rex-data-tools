@@ -57,6 +57,106 @@ classdef DataProcessor
             filtered = obj.applyFilter(lowSOS, lowGain, bandpassed);
         end
 
+        function [cleaned, mask, details] = removeOutliers(~, signal, varargin)
+            %REMOVEOUTLIERS Repair local amplitude/variance artifacts by interpolation.
+            % Window sizes are samples. Variance detection is opt-in because
+            % physiological EMG bursts can also increase local variance.
+            parser = inputParser;
+            windowCheck = @(x) isnumeric(x) && isscalar(x) && isfinite(x) && x >= 3 && mod(x, 2) == 1;
+            positiveCheck = @(x) isnumeric(x) && isscalar(x) && isreal(x) && isfinite(x) && x > 0;
+            addParameter(parser, 'WindowSamples', 201, windowCheck);
+            addParameter(parser, 'Threshold', 6, positiveCheck);
+            addParameter(parser, 'VarianceWindowSamples', 21, windowCheck);
+            addParameter(parser, 'VarianceRatio', Inf, @(x) positiveCheck(x) || isequal(x, Inf));
+            parse(parser, varargin{:});
+            options = parser.Results;
+            validateattributes(signal, {'numeric'}, {'vector', 'nonempty', 'real', 'finite'});
+            x = double(signal(:));
+            baseline = movmedian(x, options.WindowSamples);
+            deviation = abs(x - baseline);
+            localScale = 1.4826 * movmedian(deviation, options.WindowSamples);
+            % Avoid a zero threshold in constant or quantized recordings.
+            scaleFloor = eps(max(1, max(abs(x))));
+            amplitudeMask = deviation > options.Threshold * max(localScale, scaleFloor);
+            varianceMask = false(size(x));
+            if isfinite(options.VarianceRatio)
+                if options.VarianceWindowSamples >= options.WindowSamples
+                    error('DataProcessor:InvalidWindows', 'VarianceWindowSamples must be smaller than WindowSamples.');
+                end
+                % Remove amplitude spikes before assessing sustained variance.
+                residual = x - baseline;
+                residual(amplitudeMask) = 0;
+                localVariance = movvar(residual, options.VarianceWindowSamples);
+                referenceVariance = movmedian(localVariance, options.WindowSamples);
+                varianceMask = localVariance > options.VarianceRatio * max(referenceVariance, scaleFloor^2);
+            end
+            mask = amplitudeMask | varianceMask;
+            cleaned = x;
+            if any(mask)
+                good = find(~mask);
+                if numel(good) < 2
+                    error('DataProcessor:InsufficientCleanSamples', 'At least two unflagged samples are required for interpolation.');
+                end
+                interior = mask & (1:numel(x))' >= good(1) & (1:numel(x))' <= good(end);
+                cleaned(interior) = interp1(good, x(good), find(interior), 'linear');
+                % Edge artifacts use the nearest retained value, not extrapolation.
+                cleaned(1:good(1)-1) = x(good(1));
+                cleaned(good(end)+1:end) = x(good(end));
+            end
+            cleaned = reshape(cleaned, size(signal));
+            mask = reshape(mask, size(signal));
+            details = options;
+            details.AmplitudeMask = reshape(amplitudeMask, size(signal));
+            details.VarianceMask = reshape(varianceMask, size(signal));
+            details.Mask = mask;
+            details.ReplacedCount = nnz(mask);
+        end
+
+        function [data, OutlierProcessing] = processOutliersMat(obj, matPath, signalFields, varargin)
+            %PROCESSOUTLIERSMAT Append selected fields as *_cleaned, preserving sources.
+            % Example: processOutliersMat(path, {'Left.TA_filtered'}, ...
+            %     'WindowSamples', 201, 'Threshold', 6, 'VarianceRatio', 9)
+            if ischar(signalFields) || isstring(signalFields)
+                signalFields = cellstr(signalFields);
+            end
+            if ~iscellstr(signalFields) || isempty(signalFields) || ~isvector(signalFields) %#ok<ISCLSTR>
+                error('DataProcessor:InvalidFields', 'Specify a nonempty list of signal field paths.');
+            end
+            if numel(unique(signalFields)) ~= numel(signalFields)
+                error('DataProcessor:DuplicateFields', 'Signal field paths must be unique.');
+            end
+            loaded = load(matPath);
+            if ~isfield(loaded, 'data') || ~isstruct(loaded.data) || ~isscalar(loaded.data)
+                error('DataProcessor:InvalidMAT', 'MAT file must contain a scalar data struct.');
+            end
+            data = loaded.data;
+            OutlierProcessing = struct();
+            if isfield(loaded, 'OutlierProcessing')
+                OutlierProcessing = loaded.OutlierProcessing;
+            end
+            for index = 1:numel(signalFields)
+                parts = strsplit(signalFields{index}, '.');
+                if ~all(cellfun(@isvarname, parts)) || endsWith(parts{end}, '_cleaned')
+                    error('DataProcessor:InvalidFields', 'Specify source field paths without the cleaned suffix.');
+                end
+                try
+                    signal = getfield(data, parts{:}); %#ok<GFLD>
+                catch
+                    error('DataProcessor:MissingSignal', 'Signal field not found: %s.', signalFields{index});
+                end
+                if isfield(data, 'Time') && numel(signal) ~= numel(data.Time)
+                    error('DataProcessor:RowCountMismatch', 'Signal %s must match data.Time length.', signalFields{index});
+                end
+                [cleaned, ~, metadata] = obj.removeOutliers(signal, varargin{:});
+                metadata.SourceField = signalFields{index};
+                parts{end} = [parts{end} '_cleaned'];
+                data = setfield(data, parts{:}, cleaned); %#ok<SFLD>
+                OutlierProcessing = setfield(OutlierProcessing, parts{:}, metadata); %#ok<SFLD>
+            end
+            % Commit only after all selected fields have been processed.
+            save(matPath, 'data', 'OutlierProcessing', '-append');
+        end
+
         function data = processEMGMat(obj, matPath, signalFields, sampleRateHz)
             %PROCESSEMGMat Add e.g. data.Left.TA_filtered to an existing MAT.
             % signalFields: {'Left.TA','Left.GM'} or a string vector.

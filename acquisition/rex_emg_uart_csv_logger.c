@@ -4,8 +4,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include <inttypes.h>
-#include "../protocol/rex_protocol.h"
-#include "csv_writer.h"
+#include "../protocol/rex_emg_wire.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,9 +14,26 @@
 #define COM_PORT_BUFFER_SIZE 32
 #define DEFAULT_BAUD_RATE 460800u
 
+#define HDR0 0xAAu
+#define HDR1 0x55u
+#define FRAME_HEADER_SIZE 4u
+
+#define LOG_BATCH_EXO 10u
+#define LOG_BATCH_EMG 20u
+
+/* EXO 6개 신호는 16비트, EMG 4채널은 24비트로 전송됩니다. */
+#define PAYLOAD_LEN \
+    ((LOG_BATCH_EXO * 4u * sizeof(int16_t)) + \
+     (LOG_BATCH_EXO * 2u * sizeof(int16_t)) + \
+     (LOG_BATCH_EMG * LOG_EMG_CHANNEL * EMG_WIRE_SAMPLE_BYTES))
+
+#define FRAME_LEN (FRAME_HEADER_SIZE + PAYLOAD_LEN)
+#define CSV_BUFFER_SIZE (1024u * 1024u)
+
 static volatile BOOL stop_requested = FALSE;
 
-static CsvWriter writer;
+static char csv_buf[CSV_BUFFER_SIZE];
+static size_t csv_off = 0;
 
 static BOOL WINAPI console_handler(DWORD signal)
 {
@@ -26,6 +42,11 @@ static BOOL WINAPI console_handler(DWORD signal)
         return TRUE;
     }
     return FALSE;
+}
+
+static int16_t read_i16_le(const uint8_t *p)
+{
+    return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
 static void make_com_path(const char *port, char *out, size_t out_len)
@@ -195,6 +216,60 @@ static void make_csv_filename(char *out, size_t out_len)
     snprintf(out, out_len, "%s\\%s", logging_dir, timestamp);
 }
 
+static void csv_buffer_flush(FILE *csv)
+{
+    if (csv != NULL && csv_off > 0) {
+        fwrite(csv_buf, 1, csv_off, csv);
+        csv_off = 0;
+    }
+}
+
+static void csv_buffer_append(FILE *csv, const char *line)
+{
+    size_t len = strlen(line);
+
+    if (csv_off + len >= CSV_BUFFER_SIZE) {
+        csv_buffer_flush(csv);
+    }
+
+    if (len < CSV_BUFFER_SIZE) {
+        memcpy(&csv_buf[csv_off], line, len);
+        csv_off += len;
+    }
+}
+
+static FILE *open_csv(char *filename, size_t filename_len)
+{
+    make_csv_filename(filename, filename_len);
+
+    FILE *csv = fopen(filename, "wb");
+    if (csv == NULL) {
+        fprintf(stderr, "Failed to open CSV file\n");
+        return NULL;
+    }
+
+    /* 열 이름은 분석 프로그램에서 재사용할 수 있도록 영문 식별자를 사용합니다. */
+    fprintf(csv,
+        "time_ms,actual_time_ms,drift_ms,"
+        "L_deg,R_deg,M_deg,Torque_axis,Torque_CAN_L,Torque_CAN_R,"
+        "L_TB_EMG,L_GT_EMG,R_TB_EMG,R_GT_EMG\n");
+
+    csv_off = 0;
+    printf("Logging STARTED: %s\n", filename);
+    return csv;
+}
+
+static void close_csv(FILE **csv)
+{
+    if (*csv != NULL) {
+        csv_buffer_flush(*csv);
+        fflush(*csv);
+        fclose(*csv);
+        *csv = NULL;
+        printf("Logging STOPPED\n");
+    }
+}
+
 int main(int argc, char **argv)
 {
     char port_name[COM_PORT_BUFFER_SIZE];
@@ -259,10 +334,10 @@ int main(int argc, char **argv)
     }
 
     double first_actual_time_ms = 0.0;
-    bool first_sample = true;
+    bool first_sample = true;   
 
     LARGE_INTEGER qpc_frequency;
-    LARGE_INTEGER logging_start_qpc = {0};
+    LARGE_INTEGER logging_start_qpc;
 
     QueryPerformanceFrequency(&qpc_frequency);
 
@@ -273,7 +348,8 @@ int main(int argc, char **argv)
 
     uint8_t frame[FRAME_LEN];
 
-    char csv_filename[MAX_PATH] = {0};
+    FILE *csv = NULL;
+    char csv_filename[128] = {0};
 
     bool logging_active = false;
     uint64_t time_us = 0;
@@ -299,16 +375,13 @@ int main(int argc, char **argv)
             last_f10 = now;
 
             if (!logging_active) {
-                make_csv_filename(csv_filename, sizeof(csv_filename));
-                if (csv_writer_open(&writer, csv_filename)) {
-                    printf("Logging STARTED: %s\n", csv_filename);
+                csv = open_csv(csv_filename, sizeof(csv_filename));
+                if (csv != NULL) {
                     logging_active = true;
                     time_us = 0;
                     first_sample = true;
 
                     QueryPerformanceCounter(&logging_start_qpc);
-                } else {
-                    fprintf(stderr, "Failed to open CSV file\n");
                 }
             }
         }
@@ -317,10 +390,9 @@ int main(int argc, char **argv)
             last_f11 = now;
 
             if (logging_active) {
-                if (!csv_writer_close(&writer)) {
-                    fprintf(stderr, "CSV close failed\n");
-                }
-                printf("Logging STOPPED\n");
+                csv_buffer_flush(csv);
+                fflush(csv);
+                close_csv(&csv);
                 logging_active = false;
             }
         }
@@ -330,16 +402,74 @@ int main(int argc, char **argv)
         }
 
         /* 송신 순서에 따라 EXO 6개 신호와 EMG 4개 채널을 복원합니다. */
-        RexBatch batch;
-        if (!rex_decode_payload(frame + FRAME_HEADER_SIZE, PAYLOAD_LEN, &batch)) {
-            ++bad_frames;
-            continue;
+        const uint8_t *payload = &frame[4];
+        size_t off = 0;
+
+        int16_t qL[LOG_BATCH_EXO];
+        int16_t qR[LOG_BATCH_EXO];
+        int16_t qM[LOG_BATCH_EXO];
+        int16_t tq_axis[LOG_BATCH_EXO];
+        int16_t tq_can_L[LOG_BATCH_EXO];
+        int16_t tq_can_R[LOG_BATCH_EXO];
+        int32_t tb_emg[LOG_BATCH_EMG];
+        int32_t r_tb_emg[LOG_BATCH_EMG];
+        int32_t gt_emg[LOG_BATCH_EMG];
+        int32_t r_gt_emg[LOG_BATCH_EMG];
+
+        for (int i = 0; i < (int)LOG_BATCH_EXO; i++) {
+            qL[i] = read_i16_le(&payload[off]); off += 2;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EXO; i++) {
+            qR[i] = read_i16_le(&payload[off]); off += 2;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EXO; i++) {
+            qM[i] = read_i16_le(&payload[off]); off += 2;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EXO; i++) {
+            tq_axis[i] = read_i16_le(&payload[off]); off += 2;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EXO; i++) {
+            tq_can_L[i] = read_i16_le(&payload[off]); off += 2;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EXO; i++) {
+            tq_can_R[i] = read_i16_le(&payload[off]); off += 2;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EMG; i++) {
+            tb_emg[i] = rex_read_i24_be(&payload[off]); off += EMG_WIRE_SAMPLE_BYTES;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EMG; i++) {
+            gt_emg[i] = rex_read_i24_be(&payload[off]); off += EMG_WIRE_SAMPLE_BYTES;
+        }
+
+        for (int i = 0; i < (int)LOG_BATCH_EMG; i++) {
+            r_tb_emg[i] = rex_read_i24_be(&payload[off]); off += EMG_WIRE_SAMPLE_BYTES;
+        }
+        for (int i = 0; i < (int)LOG_BATCH_EMG; i++) {
+            r_gt_emg[i] = rex_read_i24_be(&payload[off]); off += EMG_WIRE_SAMPLE_BYTES;
         }
 
         frames_per_sec++;
 
-        if (logging_active) {
+        if (logging_active && csv != NULL) {
             for (int emg_idx = 0; emg_idx < (int)LOG_BATCH_EMG; emg_idx++) {
+                /* EMG 2개 샘플마다 같은 EXO 값을 사용합니다. */
+                int exo_idx = emg_idx / 2;
+
+                float l_deg = ((float)qL[exo_idx] / 100.0f) * (180.0f / 3.1415926535f);
+                float r_deg = ((float)qR[exo_idx] / 100.0f) * (180.0f / 3.1415926535f);
+                float m_deg = ((float)qM[exo_idx] / 100.0f) * (180.0f / 3.1415926535f);
+
+                float torque_axis = (float)tq_axis[exo_idx] / 10000.0f;
+                float torque_can_l = (float)tq_can_L[exo_idx] / 10000.0f;
+                float torque_can_r = (float)tq_can_R[exo_idx] / 10000.0f;
+
                 LARGE_INTEGER qpc_now;
                 QueryPerformanceCounter(&qpc_now);
 
@@ -356,28 +486,40 @@ int main(int argc, char **argv)
                 actual_time_ms -= first_actual_time_ms;
 
                 double logging_time_ms = (double)time_us / 1000.0;
-                if (!csv_writer_write_sample(&writer, &batch, (size_t)emg_idx,
-                                             logging_time_ms, actual_time_ms)) {
-                    fprintf(stderr, "CSV write failed; logging stopped\n");
-                    csv_writer_close(&writer);
-                    logging_active = false;
-                    break;
-                }
+                double drift_ms = logging_time_ms - actual_time_ms;
 
-                latest_tb = batch.emg[REX_L_TB][emg_idx];
-                latest_r_tb = batch.emg[REX_R_TB][emg_idx];
-                latest_gt = batch.emg[REX_L_GT][emg_idx];
-                latest_r_gt = batch.emg[REX_R_GT][emg_idx];
+                char line[256];
+                snprintf(line, sizeof(line),
+                        "%.3f,%.3f,%.3f,"
+                        "%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 "\n",
+                        logging_time_ms,
+                        actual_time_ms,
+                        drift_ms,
+                        l_deg,
+                        r_deg,
+                        m_deg,
+                        torque_axis,
+                        torque_can_l,
+                        torque_can_r,
+                        tb_emg[emg_idx],
+                        gt_emg[emg_idx], r_tb_emg[emg_idx], r_gt_emg[emg_idx]);
+
+                csv_buffer_append(csv, line);
+
+                latest_tb = tb_emg[emg_idx];
+                latest_r_tb = r_tb_emg[emg_idx];
+                latest_gt = gt_emg[emg_idx];
+                latest_r_gt = r_gt_emg[emg_idx];
 
                 /* 수신 샘플 수 기준의 명목 시간이며 유실된 프레임 시간은 포함하지 않습니다. */
-                time_us += REX_EMG_SAMPLE_PERIOD_US;
+                time_us += 500;
                 rows_per_sec++;
             }
         } else {
-            latest_tb = batch.emg[REX_L_TB][LOG_BATCH_EMG - 1];
-            latest_r_tb = batch.emg[REX_R_TB][LOG_BATCH_EMG - 1];
-            latest_gt = batch.emg[REX_L_GT][LOG_BATCH_EMG - 1];
-            latest_r_gt = batch.emg[REX_R_GT][LOG_BATCH_EMG - 1];
+            latest_tb = tb_emg[LOG_BATCH_EMG - 1];
+                latest_r_tb = r_tb_emg[LOG_BATCH_EMG - 1];
+            latest_gt = gt_emg[LOG_BATCH_EMG - 1];
+                latest_r_gt = r_gt_emg[LOG_BATCH_EMG - 1];
         }
 
         now = GetTickCount();
@@ -385,12 +527,9 @@ int main(int argc, char **argv)
             uint32_t bad_delta = bad_frames - last_bad_frames;
             last_bad_frames = bad_frames;
 
-            if (logging_active) {
-                if (!csv_writer_flush(&writer)) {
-                    fprintf(stderr, "CSV flush failed; logging stopped\n");
-                    csv_writer_close(&writer);
-                    logging_active = false;
-                }
+            if (logging_active && csv != NULL) {
+                csv_buffer_flush(csv);
+                fflush(csv);
             }
 
             printf("frames=%u/s rows=%u/s bad=%u/s logging=%s L_TB=%" PRId32 " L_GT=%" PRId32 " R_TB=%" PRId32 " R_GT=%" PRId32 "\n",
@@ -407,9 +546,7 @@ int main(int argc, char **argv)
         }
     }
 
-    if (!csv_writer_close(&writer)) {
-        fprintf(stderr, "CSV close failed\n");
-    }
+    close_csv(&csv);
     CloseHandle(serial);
 
     printf("\nProgram stopped\n");
