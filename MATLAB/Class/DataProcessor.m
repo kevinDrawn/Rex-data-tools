@@ -1,5 +1,5 @@
 classdef DataProcessor
-    %DATAPROCESSOR Process selected raw EMG channels and extend a MAT file.
+    %DATAPROCESSOR Preprocess signals, align time axes, and extend MAT files.
     properties (SetAccess = private)
         Config
     end
@@ -231,6 +231,39 @@ classdef DataProcessor
             end
             % Only write after every selected signal has passed processing.
             save(matPath, 'data', 'EMGProcessing', '-append');
+        end
+    end
+
+    methods (Static)
+        function [time, syncIndex] = alignSyncTime(data, scale, threshold, source)
+            %ALIGNSYNCTIME Return seconds relative to the first observed rising edge.
+            % Preserve the source data and its original time axis.
+            validateattributes(scale, {'numeric'}, {'scalar', 'real', 'finite', 'positive'});
+            validateattributes(threshold, {'numeric'}, {'scalar', 'real', 'finite'});
+            if ~isfield(data, 'sync_state')
+                error('DataProcessor:MissingSync', ...
+                    '%s requires a sync_state column mapping for synchronization.', source);
+            end
+            validateattributes(data.Time, {'numeric'}, ...
+                {'column', 'real', 'finite', 'nonempty'});
+            if numel(data.Time) < 2 || any(diff(data.Time) <= 0)
+                error('DataProcessor:InvalidTime', ...
+                    '%s Time must contain at least two strictly increasing samples.', source);
+            end
+            validateattributes(data.sync_state, {'numeric'}, ...
+                {'column', 'real', 'finite', 'numel', numel(data.Time)});
+            on = data.sync_state > threshold;
+            % An initially high signal has no observed onset; do not guess its timing.
+            if on(1)
+                error('DataProcessor:SyncInitiallyHigh', ...
+                    '%s sync_state starts on. Include samples before sync onset.', source);
+            end
+            syncIndex = find(~on(1:end-1) & on(2:end), 1, 'first') + 1;
+            if isempty(syncIndex)
+                error('DataProcessor:MissingSyncOnset', ...
+                    '%s has no off-to-on sync transition.', source);
+            end
+            time = (double(data.Time) - double(data.Time(syncIndex))) * scale;
         end
     end
 

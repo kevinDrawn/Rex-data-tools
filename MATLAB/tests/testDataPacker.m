@@ -41,6 +41,44 @@ loaded = load(output);
 assert(isequal(fieldnames(loaded), {'data'}));
 assert(isequal(loaded.data, dataA));
 
+% Rex supports old mappings and unassigned optional template entries.
+assert(isnan(template.sync_state));
+optional = mappingA;
+optional.sync_state = NaN;
+assert(isequal(packer.pack(csvA, optional, 'ReadVariableNames', false), dataA));
+optional.sync_state = [];
+assert(isequal(packer.pack(csvA, optional, 'ReadVariableNames', false), dataA));
+optional.sync_state = 2;
+withSync = packer.pack(csvA, optional, 'ReadVariableNames', false);
+assert(isequal(withSync.sync_state, source(:, 2)));
+packer.saveMat(withSync, output);
+loaded = load(output);
+assert(isequal(loaded.data, withSync));
+optional.sync_state = 11;
+assertFails(@() packer.pack(csvA, optional, 'ReadVariableNames', false));
+badSync = withSync;
+badSync.sync_state = badSync.sync_state(1:end-1);
+assertError(@() packer.saveMat(badSync, output), 'DataPacker:RowCountMismatch');
+
+mocap = DataPacker('Mocap_Hall');
+assert(strcmp(mocap.ProjectType, 'Mocap_Hall'));
+mocapMap = mocap.getColumnMap();
+assert(isequal(fieldnames(mocapMap), {'Time'; 'mocap_angle'; 'sync_state'}));
+mocapMap.Time = 3;
+mocapMap.mocap_angle = 1;
+mocapMap.sync_state = 2;
+mocapData = mocap.pack(csvA, mocapMap, 'ReadVariableNames', false);
+assert(isequal(mocapData.Time, source(:, 3)));
+assert(isequal(mocapData.mocap_angle, source(:, 1)));
+assert(isequal(mocapData.sync_state, source(:, 2)));
+mocap.saveMat(mocapData, output);
+loaded = load(output);
+assert(isequal(loaded.data, mocapData));
+assertError(@() mocap.pack(csvA, rmfield(mocapMap, 'sync_state')), ...
+    'DataPacker:MappingMismatch');
+mocapMap.sync_state = NaN;
+assertFails(@() mocap.pack(csvA, mocapMap));
+
 missing = rmfield(mappingA, 'Time');
 assertError(@() packer.pack(csvA, missing), 'DataPacker:MappingMismatch');
 extra = mappingA;

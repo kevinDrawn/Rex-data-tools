@@ -12,6 +12,7 @@ private:
     void adopt(LogData data);
     void open(void* native_window);
     void clamp_range();
+    void draw_live_values();
     void plot_group(SignalGroup group, const char* title, const char* unit, float height);
     LogData data_;
     std::vector<bool> selected_;
@@ -30,5 +31,8 @@ private:
     char port_[32] = "COM7";
     int baud_ = 460800;
     bool live_mode_ = false, follow_ = true, record_ = false;
+    bool show_live_values_ = false;
+    double live_received_at_ = -1, values_updated_at_ = -1;
+    std::vector<double> live_values_;
 };
 }

@@ -126,13 +126,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int show)
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"RexDataViewer";
     if (!RegisterClassExW(&wc)) return 1;
-    HWND window = CreateWindowW(wc.lpszClassName, L"Rex 데이터 뷰어", WS_OVERLAPPEDWINDOW,
+    HWND window = CreateWindowW(wc.lpszClassName, L"Rex Data Viewer", WS_OVERLAPPEDWINDOW,
         80, 60, 1440, 960, nullptr, nullptr, instance, nullptr);
     if (!window || !create_device(window)) {
         cleanup();
         if (window) DestroyWindow(window);
         UnregisterClassW(wc.lpszClassName, instance);
-        MessageBoxW(nullptr, L"창 또는 DirectX 11 장치를 만들지 못했습니다.", L"Rex", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Could not create the window or DirectX 11 device.", L"Rex", MB_ICONERROR);
         return 1;
     }
     IMGUI_CHECKVERSION();
@@ -147,7 +147,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int show)
     auto font = std::filesystem::path(windows_dir) / L"Fonts" / L"malgun.ttf";
     if (!io.Fonts->AddFontFromFileTTF(font.u8string().c_str(), 18.0f, nullptr,
                                      io.Fonts->GetGlyphRangesKorean())) {
-        MessageBoxW(window, L"한글 글꼴 malgun.ttf를 불러오지 못했습니다.", L"Rex", MB_ICONERROR);
+        MessageBoxW(window, L"Could not load font malgun.ttf.", L"Rex", MB_ICONERROR);
         ImPlot::DestroyContext();
         ImGui::DestroyContext();
         cleanup(); DestroyWindow(window); UnregisterClassW(wc.lpszClassName, instance);

@@ -20,7 +20,9 @@ int main() {
     // 기존 C 저장 모듈이 만든 파일을 C++ 로더로 다시 읽어 경계를 검증합니다.
     static CsvWriter writer;
     RexBatch batch = {};
-    batch.qL[0] = 100;
+    batch.qL[0] = 10000; // 1 radian on the wire.
+    batch.sync_state[0] = 1;
+    batch.sync_state[1] = 0;
     batch.emg[REX_L_TB][0] = -8388608;
     batch.emg[REX_R_GT][1] = 8388607;
     const char* filename = "viewer_test_roundtrip.csv";
@@ -30,8 +32,14 @@ int main() {
     assert(csv_writer_close(&writer));
     auto data = rex::load_csv(filename);
     std::filesystem::remove(filename);
-    assert(data.seconds.size() == 20 && data.channels.size() == 12);
+    assert(data.seconds.size() == 20 && data.channels.size() == 13);
     assert(data.seconds[1] == 0.0005);
+    assert(data.channels[2].name == "L_deg");
+    assert(std::abs(data.channels[2].values[0] - 57.295779513) < 0.00001);
+    assert(data.channels[12].name == "sync_state");
+    assert(data.channels[12].group == rex::SignalGroup::Sync);
+    assert(data.channels[12].values[0] == 1 && data.channels[12].values[1] == 1);
+    assert(data.channels[12].values[2] == 0);
     assert(data.channels[8].name == "L_TB_EMG");
     assert(data.channels[8].values[0] == -8388608);
     assert(data.channels[11].values[1] == 8388607);
@@ -70,11 +78,13 @@ int main() {
     assert(rex::visible_points(peaks, 99, 0, 1, 100).x.empty());
     assert(rex::visible_points(peaks, 0, 1, 0, 100).x.empty());
     auto demo = rex::make_demo();
-    assert(demo.channels.size() == 10 && demo.seconds.size() == 120000);
+    assert(demo.channels.size() == 11 && demo.seconds.size() == 120000);
     auto live = rex::make_live_data();
     rex::append_live_batch(live, batch, 0);
     rex::append_live_batch(live, batch, 40);
     assert(live.seconds.size() == 40);
+    assert(live.channels[10].values[0] == 1 && live.channels[10].values[1] == 1);
+    assert(live.channels[10].values[2] == 0);
     assert(live.seconds[20] == 0.020); // 표시 큐에서 배치가 빠져도 원래 수신 샘플 위치를 유지합니다.
     assert(live.channels[6].values[0] == -8388608);
     assert(std::abs(live.channels[0].values[0] - data.channels[2].values[0]) < 1e-6);
@@ -85,11 +95,17 @@ int main() {
     frame[0] = HDR0; frame[1] = HDR1;
     frame[2] = PAYLOAD_LEN & 0xff; frame[3] = PAYLOAD_LEN >> 8;
     // 잡음, 잘못된 길이, 겹치는 헤더, 바이트 단위 분할 수신, 연속 프레임을 검사합니다.
+    frame[FRAME_HEADER_SIZE + 360] = 1;
+    frame[FRAME_HEADER_SIZE + 369] = 1;
     bytes.insert(bytes.end(), frame.begin(), frame.end());
+    frame[FRAME_HEADER_SIZE + 360] = 1;
+    frame[FRAME_HEADER_SIZE + 369] = 1;
     bytes.insert(bytes.end(), frame.begin(), frame.end());
     std::vector<RexBatch> decoded;
     for (auto byte : bytes) parser.feed(&byte, 1, decoded);
     assert(decoded.size() == 2 && parser.bad_headers() == 1);
     assert(decoded[0].emg[0][0] == 0);
+    assert(decoded[0].sync_state[0] == 1 && decoded[0].sync_state[9] == 1);
+    assert(decoded[0].sync_state[1] == 0);
     return 0;
 }

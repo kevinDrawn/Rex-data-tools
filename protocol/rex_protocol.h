@@ -16,7 +16,7 @@
 #define REX_EMG_SAMPLE_PERIOD_US 500u
 #define REX_EMG_PER_EXO (LOG_BATCH_EMG / LOG_BATCH_EXO)
 #define PAYLOAD_LEN (LOG_BATCH_EXO * REX_EXO_SIGNALS * 2u + \
-                     LOG_BATCH_EMG * LOG_EMG_CHANNEL * EMG_WIRE_SAMPLE_BYTES)
+                     LOG_BATCH_EMG * LOG_EMG_CHANNEL * EMG_WIRE_SAMPLE_BYTES + LOG_BATCH_EXO)
 #define FRAME_LEN (FRAME_HEADER_SIZE + PAYLOAD_LEN)
 
 typedef enum {
@@ -32,6 +32,7 @@ typedef struct {
     int16_t torque_can_L[LOG_BATCH_EXO];
     int16_t torque_can_R[LOG_BATCH_EXO];
     int32_t emg[LOG_EMG_CHANNEL][LOG_BATCH_EMG];
+    uint8_t sync_state[LOG_BATCH_EXO];
 } RexBatch;
 
 /* 헤더를 제외한 페이로드를 해석합니다. 포인터나 길이가 잘못되면 false입니다. */

@@ -32,5 +32,8 @@ bool rex_decode_payload(const uint8_t *payload, size_t length, RexBatch *batch)
             off += EMG_WIRE_SAMPLE_BYTES;
         }
     }
+    for (size_t i = 0; i < LOG_BATCH_EXO; ++i) {
+        batch->sync_state[i] = payload[off++];
+    }
     return off == length;
 }

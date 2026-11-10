@@ -9,7 +9,7 @@
 #include "rex_protocol.h"
 
 namespace rex {
-enum class SignalGroup { Angle, Torque, Emg, Other };
+enum class SignalGroup { Angle, Torque, Emg, Sync, Other };
 struct Channel {
     std::string name;
     SignalGroup group = SignalGroup::Other;

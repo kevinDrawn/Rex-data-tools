@@ -14,20 +14,9 @@
 #define COM_PORT_BUFFER_SIZE 32
 #define DEFAULT_BAUD_RATE 460800u
 
-#define HDR0 0xAAu
-#define HDR1 0x55u
-#define FRAME_HEADER_SIZE 4u
+#include "../protocol/rex_protocol.h"
+#include "../protocol/rex_units.h"
 
-#define LOG_BATCH_EXO 10u
-#define LOG_BATCH_EMG 20u
-
-/* EXO 6개 신호는 16비트, EMG 4채널은 24비트로 전송됩니다. */
-#define PAYLOAD_LEN \
-    ((LOG_BATCH_EXO * 4u * sizeof(int16_t)) + \
-     (LOG_BATCH_EXO * 2u * sizeof(int16_t)) + \
-     (LOG_BATCH_EMG * LOG_EMG_CHANNEL * EMG_WIRE_SAMPLE_BYTES))
-
-#define FRAME_LEN (FRAME_HEADER_SIZE + PAYLOAD_LEN)
 #define CSV_BUFFER_SIZE (1024u * 1024u)
 
 static volatile BOOL stop_requested = FALSE;
@@ -252,7 +241,7 @@ static FILE *open_csv(char *filename, size_t filename_len)
     fprintf(csv,
         "time_ms,actual_time_ms,drift_ms,"
         "L_deg,R_deg,M_deg,Torque_axis,Torque_CAN_L,Torque_CAN_R,"
-        "L_TB_EMG,L_GT_EMG,R_TB_EMG,R_GT_EMG\n");
+        "L_TB_EMG,L_GT_EMG,R_TB_EMG,R_GT_EMG,sync_state\n");
 
     csv_off = 0;
     printf("Logging STARTED: %s\n", filename);
@@ -455,6 +444,8 @@ int main(int argc, char **argv)
             r_gt_emg[i] = rex_read_i24_be(&payload[off]); off += EMG_WIRE_SAMPLE_BYTES;
         }
 
+        const uint8_t *sync_state = payload + off;
+
         frames_per_sec++;
 
         if (logging_active && csv != NULL) {
@@ -462,9 +453,9 @@ int main(int argc, char **argv)
                 /* EMG 2개 샘플마다 같은 EXO 값을 사용합니다. */
                 int exo_idx = emg_idx / 2;
 
-                float l_deg = ((float)qL[exo_idx] / 100.0f) * (180.0f / 3.1415926535f);
-                float r_deg = ((float)qR[exo_idx] / 100.0f) * (180.0f / 3.1415926535f);
-                float m_deg = ((float)qM[exo_idx] / 100.0f) * (180.0f / 3.1415926535f);
+                float l_deg = rex_angle_degrees(qL[exo_idx]);
+                float r_deg = rex_angle_degrees(qR[exo_idx]);
+                float m_deg = rex_angle_degrees(qM[exo_idx]);
 
                 float torque_axis = (float)tq_axis[exo_idx] / 10000.0f;
                 float torque_can_l = (float)tq_can_L[exo_idx] / 10000.0f;
@@ -491,7 +482,7 @@ int main(int argc, char **argv)
                 char line[256];
                 snprintf(line, sizeof(line),
                         "%.3f,%.3f,%.3f,"
-                        "%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 "\n",
+                        "%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 ",%u\n",
                         logging_time_ms,
                         actual_time_ms,
                         drift_ms,
@@ -502,7 +493,8 @@ int main(int argc, char **argv)
                         torque_can_l,
                         torque_can_r,
                         tb_emg[emg_idx],
-                        gt_emg[emg_idx], r_tb_emg[emg_idx], r_gt_emg[emg_idx]);
+                        gt_emg[emg_idx], r_tb_emg[emg_idx], r_gt_emg[emg_idx],
+                        (unsigned)sync_state[exo_idx]);
 
                 csv_buffer_append(csv, line);
 

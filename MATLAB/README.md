@@ -19,7 +19,7 @@
 
 1. `LOGGING_PATH = "D:/logging/session01.csv";`처럼 CSV의 절대경로를 지정합니다.
 2. `PROJECT_TYPE = "Rex";`로 프로젝트를 선택합니다.
-3. `columnMap`의 10개 `NaN`을 해당 CSV의 열 번호로 바꿉니다.
+3. `columnMap`의 필수 10개 `NaN`을 해당 CSV의 열 번호로 바꿉니다.
 4. 실행하면 CSV와 같은 폴더에 같은 이름의 MAT 파일이 저장되고, 저장된 데이터를 그래프로 표시합니다.
 
 예: `D:/logging/session01.csv` → `D:/logging/session01.mat`.
@@ -43,12 +43,27 @@ columnMap.Left.Angle = 7;
 ```matlab
 packer = DataPacker(PROJECT_TYPE);
 columnMap = packer.getColumnMap();
-% columnMap의 모든 항목에 CSV 열 번호 지정
+% columnMap의 필수 항목에 CSV 열 번호 지정
 data = packer.pack(LOGGING_PATH, columnMap, CSV_READ_OPTIONS{:});
 packer.saveMat(data, MAT_PATH);
 ```
 
 `columnMap`은 결과 `data`와 같은 필드 구조를 가지며, 각 값은 CSV 열 번호입니다.
+
+Rex의 `columnMap.sync_state`는 선택 항목입니다. 필드를 생략하거나 `NaN` 또는
+`[]`로 두면 `data.sync_state` 없이 패킹 및 MAT 저장이 가능합니다.
+CSV 열 번호를 지정하면 해당 열이 `data.sync_state`에 포함됩니다.
+
+`PROJECT_TYPE = "Mocap_Hall"`도 지원합니다. 이 타입은 아래 세 항목이 모두 필수입니다.
+
+```matlab
+packer = DataPacker('Mocap_Hall');
+columnMap = packer.getColumnMap();
+columnMap.Time = 1;
+columnMap.mocap_angle = 2;
+columnMap.sync_state = 3;
+data = packer.pack(LOGGING_PATH, columnMap, CSV_READ_OPTIONS{:});
+```
 전체 매핑 항목은 `exec/packLoggingData.m`을 참고하세요.
 헤더 등 CSV 읽기 옵션은 `pack`의 추가 인수로 `readtable`에 전달할 수 있습니다.
 CSV 헤더는 MATLAB의 자동 감지를 사용하므로 실제 파일에 맞는 옵션을 지정하세요.

@@ -31,12 +31,15 @@ int main(void)
             payload[off++] = (uint8_t)raw;
         }
     }
-    assert(off == 360 && FRAME_LEN == 364);
+    for (size_t i = 0; i < LOG_BATCH_EXO; ++i) payload[off++] = (uint8_t)(i % 2);
+    assert(off == 370 && FRAME_LEN == 374);
     assert(!rex_decode_payload(NULL, PAYLOAD_LEN, &batch));
     assert(!rex_decode_payload(payload, PAYLOAD_LEN - 1, &batch));
     assert(!rex_decode_payload(payload, PAYLOAD_LEN + 1, &batch));
     assert(!rex_decode_payload(payload, PAYLOAD_LEN, NULL));
     assert(rex_decode_payload(payload, PAYLOAD_LEN, &batch));
+    assert(!rex_decode_payload(payload, 360, &batch));
+    for (size_t i = 0; i < LOG_BATCH_EXO; ++i) assert(batch.sync_state[i] == i % 2);
     int16_t *exo[] = {batch.qL, batch.qR, batch.qMirror, batch.torque_axis,
                      batch.torque_can_L, batch.torque_can_R};
     for (size_t c = 0; c < REX_EXO_SIGNALS; ++c)
@@ -60,16 +63,16 @@ int main(void)
         assert(fgets(line, sizeof(line), writer.file) != NULL);
         /* 분리 이전 수식과 열 순서로 비교합니다. */
         snprintf(expected, sizeof(expected),
-            "%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,%d,%d,%d,%d\n",
+            "%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,%d,%d,%d,%d,%u\n",
             i * 0.5, i * 0.25, i * 0.25,
-            ((float)batch.qL[j] / 100.0f) * (180.0f / 3.1415926535f),
-            ((float)batch.qR[j] / 100.0f) * (180.0f / 3.1415926535f),
-            ((float)batch.qMirror[j] / 100.0f) * (180.0f / 3.1415926535f),
+            ((float)batch.qL[j] / 10000.0f) * (180.0f / 3.1415926535f),
+            ((float)batch.qR[j] / 10000.0f) * (180.0f / 3.1415926535f),
+            ((float)batch.qMirror[j] / 10000.0f) * (180.0f / 3.1415926535f),
             (float)batch.torque_axis[j] / 10000.0f,
             (float)batch.torque_can_L[j] / 10000.0f,
             (float)batch.torque_can_R[j] / 10000.0f,
             (int)batch.emg[0][i], (int)batch.emg[1][i],
-            (int)batch.emg[2][i], (int)batch.emg[3][i]);
+            (int)batch.emg[2][i], (int)batch.emg[3][i], (unsigned)batch.sync_state[j]);
         assert(strcmp(line, expected) == 0);
     }
     assert(fgetc(writer.file) == EOF);

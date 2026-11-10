@@ -25,7 +25,7 @@ bool csv_writer_attach(CsvWriter *writer, FILE *file)
     if (fprintf(writer->file,
         "time_ms,actual_time_ms,drift_ms,"
         "L_deg,R_deg,M_deg,Torque_axis,Torque_CAN_L,Torque_CAN_R,"
-        "L_TB_EMG,L_GT_EMG,R_TB_EMG,R_GT_EMG\n") < 0) {
+        "L_TB_EMG,L_GT_EMG,R_TB_EMG,R_GT_EMG,sync_state\n") < 0) {
         fclose(writer->file);
         writer->file = NULL;
         writer->failed = true;
@@ -72,13 +72,13 @@ bool csv_writer_write_sample(CsvWriter *writer, const RexBatch *batch,
     char line[256];
     int length = snprintf(line, sizeof(line),
         "%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,"
-        "%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 "\n",
+        "%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 ",%u\n",
         time_ms, actual_time_ms, time_ms - actual_time_ms,
         rex_angle_degrees(batch->qL[exo_index]), rex_angle_degrees(batch->qR[exo_index]),
         rex_angle_degrees(batch->qMirror[exo_index]), rex_torque_value(batch->torque_axis[exo_index]),
         rex_torque_value(batch->torque_can_L[exo_index]), rex_torque_value(batch->torque_can_R[exo_index]),
         batch->emg[REX_L_TB][emg_index], batch->emg[REX_L_GT][emg_index],
-        batch->emg[REX_R_TB][emg_index], batch->emg[REX_R_GT][emg_index]);
+        batch->emg[REX_R_TB][emg_index], batch->emg[REX_R_GT][emg_index], (unsigned)batch->sync_state[exo_index]);
     if (length < 0 || (size_t)length >= sizeof(line)) {
         writer->failed = true;
         return false;

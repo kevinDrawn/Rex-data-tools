@@ -29,7 +29,8 @@ addpath(classDirectory);
 packer = DataPacker(PROJECT_TYPE);
 columnMap = packer.getColumnMap();
 
-% REQUIRED: replace every NaN with the correct CSV column number (1-based).
+% REQUIRED: assign the ten Rex signals below to 1-based CSV columns.
+% Optional: columnMap.sync_state = <CSV column>; leave NaN to skip.
 columnMap.Time = 1;
 columnMap.Left.Angle = 4;
 columnMap.Right.Angle = 5;

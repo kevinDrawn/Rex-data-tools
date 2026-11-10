@@ -32,15 +32,20 @@ classdef DataPacker
             restorePath = onCleanup(@() path(originalPath)); %#ok<NASGU>
             addpath(configDirectory);
             obj.Config = feval(configFunction);
+            if ~isfield(obj.Config, 'OptionalFields')
+                obj.Config.OptionalFields = cell(0, 1);
+            end
             obj.ProjectType = obj.Config.ProjectType;
         end
 
         function columnMap = getColumnMap(obj)
             %GETCOLUMNMAP Get the project's mapping template.
-            % Replace each NaN with the corresponding 1-based CSV column.
+            % Replace required NaNs with 1-based CSV columns. Optional fields
+            % may be omitted or left as NaN / [] to exclude them from data.
             columnMap = struct();
-            for index = 1:numel(obj.Config.Fields)
-                parts = strsplit(obj.Config.Fields{index}, '.');
+            fields = [obj.Config.Fields; obj.Config.OptionalFields];
+            for index = 1:numel(fields)
+                parts = strsplit(fields{index}, '.');
                 columnMap = setfield(columnMap, parts{:}, NaN); %#ok<SFLD>
             end
         end
@@ -60,10 +65,10 @@ classdef DataPacker
             if height(csv) == 0
                 error('DataPacker:EmptyCSV', 'CSV contains no data rows.');
             end
-            obj.validateMapping(columnMap, obj.Config.Fields, width(csv));
+            fields = obj.validateMapping(columnMap, width(csv));
             data = struct();
-            for index = 1:numel(obj.Config.Fields)
-                fieldPath = obj.Config.Fields{index};
+            for index = 1:numel(fields)
+                fieldPath = fields{index};
                 parts = strsplit(fieldPath, '.');
                 column = getfield(columnMap, parts{:}); %#ok<GFLD>
                 values = csv{:, column};
@@ -88,21 +93,30 @@ classdef DataPacker
     end
 
     methods (Access = private)
-        function validateMapping(obj, columnMap, expected, numberOfColumns)
+        function fields = validateMapping(obj, columnMap, numberOfColumns)
+            expected = obj.Config.Fields;
             actual = obj.leafPaths(columnMap, '');
             missing = setdiff(expected, actual);
-            extra = setdiff(actual, expected);
+            extra = setdiff(actual, [expected; obj.Config.OptionalFields]);
             if ~isempty(missing) || ~isempty(extra)
                 error('DataPacker:MappingMismatch', ...
                     'Mapping fields differ from config. Missing: [%s]. Extra: [%s].', ...
                     strjoin(missing, ', '), strjoin(extra, ', '));
             end
-            for index = 1:numel(expected)
-                parts = strsplit(expected{index}, '.');
+            fields = cell(0, 1);
+            for index = 1:numel(actual)
+                fieldPath = actual{index};
+                parts = strsplit(fieldPath, '.');
                 column = getfield(columnMap, parts{:}); %#ok<GFLD>
+                if ismember(fieldPath, obj.Config.OptionalFields) && ...
+                        isnumeric(column) && (isempty(column) || ...
+                        (isscalar(column) && isnan(column)))
+                    continue;
+                end
                 validateattributes(column, {'numeric'}, ...
                     {'scalar', 'real', 'finite', 'integer', 'positive', '<=', numberOfColumns}, ...
-                    'DataPacker.pack', expected{index});
+                    'DataPacker.pack', fieldPath);
+                fields{end + 1, 1} = fieldPath; %#ok<AGROW>
             end
         end
 
@@ -111,12 +125,13 @@ classdef DataPacker
                 error('DataPacker:InvalidData', 'data must be a scalar struct.');
             end
             actual = obj.leafPaths(data, '');
-            if ~isempty(setxor(obj.Config.Fields, actual))
+            if ~isempty(setdiff(obj.Config.Fields, actual)) || ...
+                    ~isempty(setdiff(actual, [obj.Config.Fields; obj.Config.OptionalFields]))
                 error('DataPacker:InvalidData', 'Data fields must match the project config.');
             end
             numberOfRows = [];
-            for index = 1:numel(obj.Config.Fields)
-                parts = strsplit(obj.Config.Fields{index}, '.');
+            for index = 1:numel(actual)
+                parts = strsplit(actual{index}, '.');
                 values = getfield(data, parts{:}); %#ok<GFLD>
                 validateattributes(values, {'numeric'}, {'real', 'column', 'nonempty'});
                 if isempty(numberOfRows)
