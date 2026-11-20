@@ -1,0 +1,86 @@
+%% Input settings
+LOGGING_PATH = "C:\ncs\C_Logger\Rex-data-tools\build\Release\logging\3Hz\rex_live_20261120_145330_882.csv";
+PROJECT_TYPE = "Rex";
+
+% Empty: save beside the CSV with the same base name.
+% Alternatively, set the absolute destination .mat path.
+MAT_PATH = "C:\ncs\C_Logger\Rex-data-tools\build\Release\logging\3Hz\rex_live_20261120_145330_882.mat";
+
+% Options passed to readtable. For a CSV without a header, use:
+% CSV_READ_OPTIONS = {'ReadVariableNames', false};
+CSV_READ_OPTIONS = {};
+
+% In this controller log, firmware writes nominal_q to R_deg and q_L to L_deg.
+% The group names refer to the existing Rex column mapping below.
+REFERENCE_ANGLE_GROUP = "Assisted";
+MEASURED_ANGLE_GROUP = "Left";
+EXCITATION_FREQUENCY_HZ = 1;
+% [] uses the full recording for both the plot and the metrics.
+ANALYSIS_TIME_RANGE_MS = []; % Example steady-state window: [1000 9000].
+
+%% Include classes relative to this script
+filePath = matlab.desktop.editor.getActiveFilename;
+execDirectory = fileparts(filePath);
+% Accuracy_Hysterisis -> Validation -> Hall Sensor -> MATLAB
+matlabDirectory = fileparts(execDirectory);
+classDirectory = fullfile(matlabDirectory, 'Class');
+addpath(classDirectory);
+
+%% Load the project's mapping structure and enter CSV column numbers
+packer = DataPacker(PROJECT_TYPE);
+columnMap = packer.getColumnMap();
+
+% REQUIRED: assign the ten Rex signals below to 1-based CSV columns.
+% Optional: columnMap.sync_state = <CSV column>; leave NaN to skip.
+columnMap.Time = 1;
+columnMap.Left.Angle = 4;
+columnMap.Right.Angle = 5;
+columnMap.Assisted.Angle = 6;
+columnMap.Left.Torque = 8;
+columnMap.Right.Torque = 9;
+columnMap.Left.TA = 10;
+columnMap.Left.GM = 11;
+columnMap.Right.TA = 12;
+columnMap.Right.GM = 13;
+
+%% Pack and export
+% MAT_PATH가 비어 있으면 CSV와 같은 폴더·이름으로 저장
+if strlength(MAT_PATH) == 0
+    [loggingDirectory, loggingName] = fileparts(LOGGING_PATH);
+    MAT_PATH = fullfile(loggingDirectory, loggingName + ".mat");
+end
+
+data = packer.pack(LOGGING_PATH, columnMap, CSV_READ_OPTIONS{:});
+packer.saveMat(data, MAT_PATH);
+fprintf('Saved %d samples to %s\n', numel(data.Time), char(MAT_PATH));
+
+%% Plot reference and measured angles on the logger time axis
+loaded = load(MAT_PATH, 'data');
+plotData = loaded.data;
+referenceAngle = plotData.(REFERENCE_ANGLE_GROUP).Angle;
+measuredAngle = plotData.(MEASURED_ANGLE_GROUP).Angle;
+plotter = DataPlotter();
+[plotFigure, plotAxes] = plotter.plotGroups( ...
+    plotData.Time, {[referenceAngle, measuredAngle]}, ANALYSIS_TIME_RANGE_MS, 'vertical', ...
+    'Titles', {'Controller response'}, ...
+    'YLabels', {'Angle (deg)'}, ...
+    'Legends', {{'Reference', 'Measured'}}, ...
+    'XLabel', 'Logger time (ms)');
+
+%% Analyze the same samples shown in the plot
+selected = true(size(plotData.Time));
+if ~isempty(ANALYSIS_TIME_RANGE_MS)
+    selected = plotData.Time >= ANALYSIS_TIME_RANGE_MS(1) & ...
+        plotData.Time <= ANALYSIS_TIME_RANGE_MS(2);
+end
+timeSeconds = plotData.Time(selected) / 1000;
+processor = DataProcessor();
+rmseDegrees = processor.calculateRMSE(referenceAngle(selected), measuredAngle(selected));
+[delaySeconds, phaseDelayDegrees] = processor.calculatePhaseDelay( ...
+    timeSeconds, referenceAngle(selected), measuredAngle(selected), EXCITATION_FREQUENCY_HZ);
+
+fprintf('Analyzed %d samples from %.3f to %.3f ms.\n', ...
+    nnz(selected), timeSeconds(1) * 1000, timeSeconds(end) * 1000);
+fprintf('Tracking RMSE: %.4f deg\n', rmseDegrees);
+fprintf('Phase delay at %.4g Hz: %+.4f deg (%+.4f ms)\n', ...
+    EXCITATION_FREQUENCY_HZ, phaseDelayDegrees, delaySeconds * 1000);
