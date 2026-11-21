@@ -1,0 +1,253 @@
+%EXEC_VALIDATE_HALL_SENSOR_MOCAP Load Rex and Mocap CSVs for Hall validation.
+% Set both CSV paths and column mappings, then run the entire script.
+% Each MAT file contains a variable named data beside its source CSV.
+
+%% Input settings
+REX_LOGGING_PATH = "D:\park\01. STEAM\[Paper] Paperwork\2026_TMECH\TMECH Review\Bench-Top Experiment\Hall sensor Validation\Hysterisis\2t\Rex\rex_live_20261110_232206_851.csv";
+MOCAP_LOGGING_PATH = "D:\park\01. STEAM\[Paper] Paperwork\2026_TMECH\TMECH Review\Bench-Top Experiment\Hall sensor Validation\Hysterisis\mocap\2026-11-10 19-20-51_jointpixeldata_tracker_AK_angle_trigger.csv";
+
+% Options passed to readtable. For CSVs without headers, use:
+% {'ReadVariableNames', false}. Set NumHeaderLines as needed for Mocap.
+REX_CSV_READ_OPTIONS = {};
+MOCAP_CSV_READ_OPTIONS = {};
+
+% Convert each source time unit to seconds (Rex timestamps are milliseconds).
+REX_TIME_SCALE_TO_SECONDS = 0.001;
+MOCAP_TIME_SCALE_TO_SECONDS = 0.001; % Mocap CSV: time_ms.
+REX_ANGLE_SIDE = 'Left'; % 'Left' or 'Right'
+PLOT_TIME_RANGE = []; % Seconds relative to sync onset; [] shows both full traces.
+SYNC_THRESHOLD = 0.5; % sync_state > threshold means on (0/1 input).
+MOCAP_LPF_CUTOFF_HZ = 10; % Causal first-order RC LPF (same form as calibration).
+BIAS_TIME_RANGE = [0 200]; % [start end] seconds from sync onset, e.g. [5 20].
+% [] fits over the full shared time span, independently of PLOT_TIME_RANGE.
+
+HYSTERESIS_TIME_RANGE = []; % [start end] in seconds from sync onset; [] uses all motion.
+HYSTERESIS_SPEED_WINDOW_S = 1; % Centered window for estimating Mocap angular speed.
+HYSTERESIS_MIN_SPEED_DEG_S = 2; % Minimum absolute speed to classify motion.
+
+%% Include classes relative to this script
+filePath = matlab.desktop.editor.getActiveFilename;
+execDirectory = fileparts(filePath);
+classDirectory = fullfile(execDirectory, '..', '..', '..', 'Class');
+addpath(classDirectory);
+
+%% Rex: assign 1-based CSV column numbers
+rexPacker = DataPacker('Rex');
+rexColumnMap = rexPacker.getColumnMap();
+rexColumnMap.Time = 1;
+rexColumnMap.Left.Angle = 4;
+rexColumnMap.Right.Angle = 5;
+rexColumnMap.Assisted.Angle = 6;
+rexColumnMap.Left.Torque = 8;
+rexColumnMap.Right.Torque = 9;
+rexColumnMap.Left.TA = 10;
+rexColumnMap.Left.GM = 11;
+rexColumnMap.Right.TA = 12;
+rexColumnMap.Right.GM = 13;
+% Optional for loading; assign the actual column for later synchronization.
+rexColumnMap.sync_state = 14;
+
+%% Mocap: replace all three NaNs with actual CSV column numbers
+mocapPacker = DataPacker('Mocap_Hall');
+mocapColumnMap = mocapPacker.getColumnMap();
+mocapColumnMap.Time = 1;
+mocapColumnMap.mocap_angle = 3;
+mocapColumnMap.sync_state = 4;
+
+%% Validate paths before loading or saving either dataset
+if strlength(REX_LOGGING_PATH) == 0 || ~isfile(REX_LOGGING_PATH)
+    error('HallValidation:MissingRexCSV', ...
+        'Set REX_LOGGING_PATH to an existing Rex CSV file.');
+end
+if strlength(MOCAP_LOGGING_PATH) == 0 || ~isfile(MOCAP_LOGGING_PATH)
+    error('HallValidation:MissingMocapCSV', ...
+        'Set MOCAP_LOGGING_PATH to an existing Mocap CSV file.');
+end
+
+%% Load both datasets (raw time axes and signal units are preserved)
+rexData = rexPacker.pack(REX_LOGGING_PATH, rexColumnMap, ...
+    REX_CSV_READ_OPTIONS{:});
+mocapData = mocapPacker.pack(MOCAP_LOGGING_PATH, mocapColumnMap, ...
+    MOCAP_CSV_READ_OPTIONS{:});
+
+%% Save beside each CSV using the same base name and a .mat extension
+[rexDirectory, rexName] = fileparts(REX_LOGGING_PATH);
+REX_MAT_PATH = fullfile(rexDirectory, rexName + ".mat");
+[mocapDirectory, mocapName] = fileparts(MOCAP_LOGGING_PATH);
+MOCAP_MAT_PATH = fullfile(mocapDirectory, mocapName + ".mat");
+
+rexPacker.saveMat(rexData, REX_MAT_PATH);
+mocapPacker.saveMat(mocapData, MOCAP_MAT_PATH);
+fprintf('Rex: %d samples saved to %s\n', numel(rexData.Time), char(REX_MAT_PATH));
+fprintf('Mocap: %d samples saved to %s\n', numel(mocapData.Time), char(MOCAP_MAT_PATH));
+
+%% Synchronize: first observed off-to-on transition is t = 0 for each source
+% Preserve the original data and saved MAT files; use separate plot time axes.
+validateattributes(REX_TIME_SCALE_TO_SECONDS, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'positive'});
+validateattributes(MOCAP_TIME_SCALE_TO_SECONDS, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'positive'});
+validateattributes(SYNC_THRESHOLD, {'numeric'}, {'scalar', 'real', 'finite'});
+REX_ANGLE_SIDE = validatestring(REX_ANGLE_SIDE, {'Left', 'Right'});
+
+[rexTime, rexSyncIndex] = DataProcessor.alignSyncTime(rexData, ...
+    REX_TIME_SCALE_TO_SECONDS, SYNC_THRESHOLD, 'Rex');
+[mocapTime, mocapSyncIndex] = DataProcessor.alignSyncTime(mocapData, ...
+    MOCAP_TIME_SCALE_TO_SECONDS, SYNC_THRESHOLD, 'Mocap');
+
+fprintf('Sync onset: Rex row %d; Mocap row %d (each aligned to 0 s).\n', ...
+    rexSyncIndex, mocapSyncIndex);
+fprintf('Aligned time (s): Rex [%.6f, %.6f], Mocap [%.6f, %.6f]\n', ...
+    rexTime(1), rexTime(end), mocapTime(1), mocapTime(end));
+
+%% Filter Mocap on its full native time grid before selecting the fit interval
+rexAngle = rexData.(REX_ANGLE_SIDE).Angle;
+mocapAngleFiltered = DataProcessor.filterFirstOrderLowpass( ...
+    mocapTime, mocapData.mocap_angle, MOCAP_LPF_CUTOFF_HZ);
+
+%% Fit a constant Mocap bias on synchronized timestamps
+% RMSE uses one pair per native Mocap sample, with Rex linearly interpolated.
+% Positive bias means Mocap reads higher: corrected Mocap = filtered - bias.
+% The fit range is clipped to shared data; no extrapolated samples are used.
+biasResult = DataProcessor.fitMocapBias(rexTime, rexAngle, ...
+    mocapTime, mocapAngleFiltered, BIAS_TIME_RANGE);
+mocapBiasDegrees = biasResult.BiasDegrees;
+mocapAngleCorrected = mocapAngleFiltered - mocapBiasDegrees;
+fprintf('Mocap LPF: first-order RC, %.3f Hz (causal).\n', MOCAP_LPF_CUTOFF_HZ);
+fprintf('Bias fit interval: [%.6f, %.6f] s; %d finite pairs.\n', ...
+    biasResult.EffectiveTimeRange, biasResult.SampleCount);
+fprintf('Mocap bias: %+.6f deg (subtract from filtered Mocap).\n', mocapBiasDegrees);
+fprintf('Fit-interval RMSE: %.6f -> %.6f deg after bias correction.\n', ...
+    biasResult.RMSEBeforeDegrees, biasResult.RMSEAfterDegrees);
+
+%% Overlay both native sample grids in one DataPlotter subplot
+% Each trace uses its own native timestamps in this overlay.
+if isempty(PLOT_TIME_RANGE)
+    plotTimeRange = [min(rexTime(1), mocapTime(1)), ...
+        max(rexTime(end), mocapTime(end))];
+else
+    plotTimeRange = PLOT_TIME_RANGE;
+end
+
+plotter = DataPlotter();
+
+[plotFigure, plotAxes] = plotter.plotGroups(rexTime, {rexAngle}, ...
+    plotTimeRange, 'vertical', ...
+    'Titles', {sprintf('Hall sensor (%s) vs Mocap', REX_ANGLE_SIDE)}, ...
+    'YLabels', {'Angle (deg)'}, 'XLabel', 'Time from sync onset (s)', ...
+    'Colors', {plotter.Config.Colors.(REX_ANGLE_SIDE)});
+hold(plotAxes(1), 'on');
+
+plot(plotAxes(1), mocapTime, mocapAngleFiltered, ...
+    'Color', plotter.Config.Colors.GM, ...
+    'LineWidth', plotter.Config.LineWidth);
+hold(plotAxes(1), 'off');
+legend(plotAxes(1), {sprintf('Rex %s', REX_ANGLE_SIDE), ...
+    sprintf('Mocap (1st-order LPF, %g Hz)', MOCAP_LPF_CUTOFF_HZ)}, ...
+    'Interpreter', 'none', 'Box', 'off', 'Location', 'northeastoutside');
+
+%% Overlay after applying the optimal constant Mocap bias
+[biasFigure, biasAxes] = plotter.plotGroups(rexTime, {rexAngle}, ...
+    plotTimeRange, 'vertical', ...
+    'Titles', {sprintf('Mocap bias = %+.4f deg; fit RMSE %.4f -> %.4f deg', ...
+        mocapBiasDegrees, biasResult.RMSEBeforeDegrees, biasResult.RMSEAfterDegrees)}, ...
+    'YLabels', {'Angle (deg)'}, 'XLabel', 'Time from sync onset (s)', ...
+    'Colors', {plotter.Config.Colors.(REX_ANGLE_SIDE)});
+hold(biasAxes(1), 'on');
+plot(biasAxes(1), mocapTime, mocapAngleCorrected, ...
+    'Color', plotter.Config.Colors.GM, 'LineWidth', plotter.Config.LineWidth);
+xline(biasAxes(1), biasResult.EffectiveTimeRange(1), '--', 'Bias fit start', ...
+    'HandleVisibility', 'off');
+xline(biasAxes(1), biasResult.EffectiveTimeRange(2), '--', 'Bias fit end', ...
+    'HandleVisibility', 'off');
+hold(biasAxes(1), 'off');
+legend(biasAxes(1), {sprintf('Rex %s', REX_ANGLE_SIDE), 'Mocap (LPF + bias corrected)'}, ...
+    'Interpreter', 'none', 'Box', 'off', 'Location', 'northeastoutside');
+
+%% Hysteresis: pair Hall and Mocap angles on the same timestamps
+% Use the filtered, bias-corrected reference from the overlay above.
+% Interpolate Hall onto the native Mocap grid without extrapolating.
+hallOnMocap = interp1(rexTime, double(rexAngle(:)), mocapTime, 'linear', NaN);
+validPairs = isfinite(hallOnMocap) & isfinite(mocapAngleCorrected);
+
+% Estimate direction using a centered angular change over a window in seconds.
+% This reduces frame-to-frame tracking jitter when the joint is stationary.
+validateattributes(HYSTERESIS_SPEED_WINDOW_S, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'positive'});
+validateattributes(HYSTERESIS_MIN_SPEED_DEG_S, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'positive'});
+halfWindow = HYSTERESIS_SPEED_WINDOW_S / 2;
+windowStart = max(mocapTime - halfWindow, mocapTime(1));
+windowEnd = min(mocapTime + halfWindow, mocapTime(end));
+angleStart = interp1(mocapTime, mocapAngleCorrected, windowStart, 'linear');
+angleEnd = interp1(mocapTime, mocapAngleCorrected, windowEnd, 'linear');
+mocapSpeed = (angleEnd - angleStart) ./ (windowEnd - windowStart);
+increasing = validPairs & mocapSpeed >= HYSTERESIS_MIN_SPEED_DEG_S;
+decreasing = validPairs & mocapSpeed <= -HYSTERESIS_MIN_SPEED_DEG_S;
+stationary = validPairs & ~(increasing | decreasing);
+
+motionTimeMask = true(size(mocapTime));
+if ~isempty(HYSTERESIS_TIME_RANGE)
+    validateattributes(HYSTERESIS_TIME_RANGE, {'numeric'}, ...
+        {'vector', 'numel', 2, 'real', 'finite', 'increasing'});
+    motionTimeMask = mocapTime >= HYSTERESIS_TIME_RANGE(1) & ...
+        mocapTime <= HYSTERESIS_TIME_RANGE(2);
+end
+movingUp = increasing & motionTimeMask;
+movingDown = decreasing & motionTimeMask;
+moving = movingUp | movingDown;
+fprintf('Hysteresis: %d synchronized pairs; %d increasing and %d decreasing in motion plot.\n', ...
+    nnz(validPairs), nnz(movingUp), nnz(movingDown));
+if any(moving)
+    motionTime = mocapTime(moving);
+    fprintf('Motion plot: first to last selected sample %.3f to %.3f s.\n', ...
+        motionTime(1), motionTime(end));
+else
+    warning('HallValidation:NoHysteresisMotion', ...
+        'No moving samples in the selected range. Check the time range and speed threshold.');
+end
+
+hysteresisFigure = figure('Name', 'Hall sensor hysteresis', 'Color', 'w', ...
+    'Position', [100 100 1050 540]);
+hysteresisLayout = tiledlayout(hysteresisFigure, 1, 2, ...
+    'TileSpacing', 'compact', 'Padding', 'compact');
+fullAxes = nexttile(hysteresisLayout);
+motionAxes = nexttile(hysteresisLayout);
+
+limits = [min([mocapAngleCorrected(validPairs); hallOnMocap(validPairs)]), ...
+    max([mocapAngleCorrected(validPairs); hallOnMocap(validPairs)])];
+margin = max(1, 0.02 * diff(limits));
+limits = limits + [-margin margin];
+for axesHandle = [fullAxes, motionAxes]
+    hold(axesHandle, 'on');
+    plot(axesHandle, limits, limits, '--', 'Color', [0.5 0.5 0.5], ...
+        'DisplayName', 'Hall = Mocap');
+    axis(axesHandle, 'equal');
+    xlim(axesHandle, limits);
+    ylim(axesHandle, limits);
+    grid(axesHandle, 'on');
+    box(axesHandle, 'on');
+end
+
+scatter(fullAxes, mocapAngleCorrected(stationary), hallOnMocap(stationary), ...
+    9, [0.63 0.63 0.63], 'filled', 'DisplayName', 'Below speed threshold');
+plotHysteresisDirections(fullAxes, mocapAngleCorrected, hallOnMocap, ...
+    increasing, decreasing);
+plotHysteresisDirections(motionAxes, mocapAngleCorrected, hallOnMocap, ...
+    movingUp, movingDown);
+title(fullAxes, 'Full synchronized recording');
+title(motionAxes, 'Moving samples only');
+xlabel(hysteresisLayout, 'Mocap reference angle (deg, LPF + bias corrected)');
+ylabel(hysteresisLayout, sprintf('Hall sensor angle (deg, %s)', REX_ANGLE_SIDE));
+for axesHandle = [fullAxes, motionAxes]
+    legend(axesHandle, 'Location', 'northwest', 'Box', 'off');
+    hold(axesHandle, 'off');
+end
+
+function plotHysteresisDirections(ax, mocapAngle, hallAngle, increasing, decreasing)
+% Draw the larger open markers first so overlapping yellow points stay visible.
+scatter(ax, mocapAngle(decreasing), hallAngle(decreasing), 28, ...
+    [0.86 0.32 0.08], 'o', 'DisplayName', 'Mocap decreasing');
+scatter(ax, mocapAngle(increasing), hallAngle(increasing), 11, ...
+    [0.96 0.73 0.08], 'o', 'filled', 'DisplayName', 'Mocap increasing');
+end

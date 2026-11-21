@@ -235,6 +235,172 @@ classdef DataProcessor
     end
 
     methods (Static)
+        function result = extractPawClearance(time, toeHeight, stanceState, varargin)
+            %EXTRACTPAWCLEARANCE Pair each eligible stance with the next observed swing.
+            % Ground = minimum height in stance (1); peak = maximum height in
+            % the immediately following swing (0). Clearance = peak - ground.
+            % Heights must increase upward. Both phases use the SAME input trace.
+            % Time is the peak time. Sample indices are 1-based input-row indices.
+            % A recording starting in stance is treated as partial unless the
+            % caller confirms its start (for example, an IC flag at row 1).
+            validateattributes(time, {'numeric'}, ...
+                {'column', 'real', 'finite', 'nonempty', 'increasing'});
+            validateattributes(toeHeight, {'numeric'}, ...
+                {'column', 'real', 'finite', 'numel', numel(time)});
+            validateattributes(stanceState, {'numeric', 'logical'}, ...
+                {'column', 'real', 'finite', 'numel', numel(time)});
+            if any(stanceState ~= 0 & stanceState ~= 1)
+                error('DataProcessor:InvalidStance', 'Stance labels must be 0 or 1.');
+            end
+            parser = inputParser;
+            addParameter(parser, 'InitialStanceIsComplete', false, ...
+                @(value) islogical(value) && isscalar(value));
+            parse(parser, varargin{:});
+            state = logical(stanceState);
+            starts = [1; find(diff(state) ~= 0) + 1];
+            ends = [starts(2:end)-1; numel(state)];
+            pairs = find(state(starts(1:end-1)) & ~state(starts(2:end)));
+            % Retain a trailing swing using its available samples. Its peak is
+            % the observed maximum; a later stance need not be in the recording.
+            % SwingEndObserved = 0 distinguishes this boundary case in saved data.
+            if ~parser.Results.InitialStanceIsComplete
+                pairs = pairs(starts(pairs) > 1);
+            end
+            count = numel(pairs);
+            names = {'Cycle', 'Time', 'StanceStartIndex', 'StanceEndIndex', ...
+                'SwingStartIndex', 'SwingEndIndex', 'StanceStartTime_s', ...
+                'StanceEndTime_s', 'SwingStartTime_s', 'SwingEndTime_s', ...
+                'GroundIndex', 'GroundTime_s', 'GroundHeight_mm', ...
+                'PeakIndex', 'PeakTime_s', 'PeakToeHeight_mm', 'PeakPawHeight_mm', ...
+                'SwingEndObserved'};
+            result = struct();
+            for field = 1:numel(names)
+                result.(names{field}) = zeros(count, 1);
+            end
+            for cycle = 1:count
+                run = pairs(cycle);
+                stanceRows = starts(run):ends(run);
+                swingRows = starts(run+1):ends(run+1);
+                [ground, groundOffset] = min(toeHeight(stanceRows));
+                [peak, peakOffset] = max(toeHeight(swingRows));
+                groundRow = stanceRows(groundOffset);
+                peakRow = swingRows(peakOffset);
+                result.Cycle(cycle) = cycle;
+                result.Time(cycle) = time(peakRow);
+                result.StanceStartIndex(cycle) = stanceRows(1);
+                result.StanceEndIndex(cycle) = stanceRows(end);
+                result.SwingStartIndex(cycle) = swingRows(1);
+                result.SwingEndIndex(cycle) = swingRows(end);
+                result.StanceStartTime_s(cycle) = time(stanceRows(1));
+                result.StanceEndTime_s(cycle) = time(stanceRows(end));
+                result.SwingStartTime_s(cycle) = time(swingRows(1));
+                result.SwingEndTime_s(cycle) = time(swingRows(end));
+                result.GroundIndex(cycle) = groundRow;
+                result.GroundTime_s(cycle) = time(groundRow);
+                result.GroundHeight_mm(cycle) = ground;
+                result.PeakIndex(cycle) = peakRow;
+                result.PeakTime_s(cycle) = time(peakRow);
+                result.PeakToeHeight_mm(cycle) = peak;
+                result.PeakPawHeight_mm(cycle) = peak - ground;
+                result.SwingEndObserved(cycle) = double(run+1 < numel(starts));
+            end
+        end
+
+        function time = framesToTime(frame, fps, frameOrigin)
+            %FRAMESTOTIME Convert source frame IDs to seconds without closing gaps.
+            % Zero-based video frame IDs use frameOrigin = 0 (the default).
+            % For one-based frame IDs use frameOrigin = 1. Cropped recordings
+            % retain their position on the original video timeline.
+            if nargin < 3
+                frameOrigin = 0;
+            end
+            validateattributes(frame, {'numeric'}, ...
+                {'vector', 'real', 'finite', 'integer', 'nonempty'});
+            validateattributes(fps, {'numeric'}, ...
+                {'scalar', 'real', 'finite', 'positive'});
+            validateattributes(frameOrigin, {'numeric'}, ...
+                {'scalar', 'real', 'finite', 'integer'});
+            frame = double(frame(:));
+            if any(frame < frameOrigin) || any(diff(frame) <= 0)
+                error('DataProcessor:InvalidFrame', ...
+                    'Frame IDs must be strictly increasing and >= frameOrigin.');
+            end
+            time = (frame - double(frameOrigin)) / double(fps);
+        end
+
+        function filtered = filterFirstOrderLowpass(time, signal, cutoffHz)
+            %FILTERFIRSTORDERLOWPASS Causal RC LPF using each interval in seconds.
+            % Backward Euler: alpha = dt/(RC + dt), RC = 1/(2*pi*cutoffHz).
+            % Initialize at the first value to avoid a zero-state startup jump.
+            validateattributes(time, {'numeric'}, {'vector', 'real', 'finite', 'nonempty'});
+            validateattributes(signal, {'numeric'}, ...
+                {'vector', 'real', 'finite', 'numel', numel(time)});
+            validateattributes(cutoffHz, {'numeric'}, {'scalar', 'real', 'finite', 'positive'});
+            time = double(time(:));
+            intervals = diff(time);
+            if isempty(intervals) || any(intervals <= 0)
+                error('DataProcessor:InvalidTime', 'LPF time must be strictly increasing with at least two samples.');
+            end
+            if cutoffHz >= 0.5 / median(intervals)
+                error('DataProcessor:InvalidCutoff', 'LPF cutoff must be below the nominal Nyquist frequency.');
+            end
+            values = double(signal(:));
+            filtered = values;
+            rc = 1 / (2*pi*cutoffHz);
+            for index = 2:numel(values)
+                alpha = intervals(index-1) / (rc + intervals(index-1));
+                filtered(index) = filtered(index-1) + alpha * (values(index) - filtered(index-1));
+            end
+            filtered = reshape(filtered, size(signal));
+        end
+
+        function result = fitMocapBias(rexTime, rexAngle, mocapTime, mocapAngle, timeRange)
+            %FITMOCAPBIAS Fit mocap_corrected = mocap - BiasDegrees.
+            % Minimize RMSE on native Mocap timestamps in the synced interval.
+            % Interpolate Rex linearly without extrapolation; ignore nonfinite pairs.
+            validateattributes(rexTime, {'numeric'}, {'vector', 'real', 'finite', 'nonempty'});
+            validateattributes(mocapTime, {'numeric'}, {'vector', 'real', 'finite', 'nonempty'});
+            validateattributes(rexAngle, {'numeric'}, {'vector', 'real', 'numel', numel(rexTime)});
+            validateattributes(mocapAngle, {'numeric'}, {'vector', 'real', 'numel', numel(mocapTime)});
+            rexTime = double(rexTime(:));
+            mocapTime = double(mocapTime(:));
+            if numel(rexTime) < 2 || any(diff(rexTime) <= 0) || ...
+                    numel(mocapTime) < 2 || any(diff(mocapTime) <= 0)
+                error('DataProcessor:InvalidTime', 'Bias fitting requires strictly increasing time vectors.');
+            end
+            overlap = [max(rexTime(1), mocapTime(1)), min(rexTime(end), mocapTime(end))];
+            if nargin < 5 || isempty(timeRange)
+                timeRange = overlap;
+            end
+            validateattributes(timeRange, {'numeric'}, {'vector', 'numel', 2, 'real', 'finite'});
+            if timeRange(1) >= timeRange(2)
+                error('DataProcessor:InvalidBiasRange', 'Bias time range must satisfy start < end.');
+            end
+            effectiveRange = [max(timeRange(1), overlap(1)), min(timeRange(2), overlap(2))];
+            selected = mocapTime >= effectiveRange(1) & mocapTime <= effectiveRange(2);
+            comparisonTime = mocapTime(selected);
+            rexOnMocap = interp1(rexTime, double(rexAngle(:)), comparisonTime, 'linear', NaN);
+            mocapValues = double(mocapAngle(:));
+            mocapValues = mocapValues(selected);
+            valid = isfinite(rexOnMocap) & isfinite(mocapValues);
+            if nnz(valid) < 2
+                error('DataProcessor:InsufficientBiasSamples', ...
+                    'Bias range must contain at least two finite overlapping Mocap/Rex pairs.');
+            end
+            residual = mocapValues(valid) - rexOnMocap(valid);
+            result.BiasDegrees = mean(residual);
+            result.RMSEBeforeDegrees = sqrt(mean(residual.^2));
+            result.RMSEAfterDegrees = sqrt(mean((residual - result.BiasDegrees).^2));
+            result.RequestedTimeRange = timeRange(:)';
+            result.EffectiveTimeRange = effectiveRange;
+            result.SampleCount = nnz(valid);
+            result.Time = comparisonTime(valid);
+            result.RexAngle = rexOnMocap(valid);
+            result.MocapAngle = mocapValues(valid);
+            result.ResidualBeforeDegrees = residual;
+            result.ResidualAfterDegrees = residual - result.BiasDegrees;
+        end
+
         function [time, syncIndex] = alignSyncTime(data, scale, threshold, source)
             %ALIGNSYNCTIME Return seconds relative to the first observed rising edge.
             % Preserve the source data and its original time axis.
@@ -253,15 +419,12 @@ classdef DataProcessor
             validateattributes(data.sync_state, {'numeric'}, ...
                 {'column', 'real', 'finite', 'numel', numel(data.Time)});
             on = data.sync_state > threshold;
-            % An initially high signal has no observed onset; do not guess its timing.
-            if on(1)
-                error('DataProcessor:SyncInitiallyHigh', ...
-                    '%s sync_state starts on. Include samples before sync onset.', source);
-            end
+            % Ignore an initial high plateau; only an observed off-to-on edge counts.
+
             syncIndex = find(~on(1:end-1) & on(2:end), 1, 'first') + 1;
             if isempty(syncIndex)
                 error('DataProcessor:MissingSyncOnset', ...
-                    '%s has no off-to-on sync transition.', source);
+                    '%s has no observed off-to-on sync transition. Record a low state followed by a high state.', source);
             end
             time = (double(data.Time) - double(data.Time(syncIndex))) * scale;
         end

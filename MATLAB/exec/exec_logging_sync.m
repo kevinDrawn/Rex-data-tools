@@ -19,9 +19,22 @@ PLOT_TIME_RANGE = [0 245000]; % Example: [1000 5000] if Time is in milliseconds.
 % PLOT_DIRECTION = "vertical"; % 'vertical': 4-by-1; 'horizontal': 1-by-4.
 
 %% Include classes relative to this script
-filePath = matlab.desktop.editor.getActiveFilename;
-execDirectory = fileparts(filePath);
-classDirectory = fullfile(fileparts(execDirectory), 'Class');
+% Locate MATLAB/Class from this script; sections use Current Folder.
+filePath = mfilename('fullpath');
+execDirectory = pwd;
+if ~isempty(filePath)
+    execDirectory = fileparts(filePath);
+end
+matlabDirectory = execDirectory;
+while ~isfile(fullfile(matlabDirectory, 'Class', 'DataPacker.m'))
+    parentDirectory = fileparts(matlabDirectory);
+    if isempty(parentDirectory) || strcmp(parentDirectory, matlabDirectory)
+        error('RexTools:MissingClassDirectory', ...
+            'Cannot find MATLAB/Class above %s. Set Current Folder inside this MATLAB project.', execDirectory);
+    end
+    matlabDirectory = parentDirectory;
+end
+classDirectory = fullfile(matlabDirectory, 'Class');
 addpath(classDirectory);
 
 %% Load the project's mapping structure and enter CSV column numbers

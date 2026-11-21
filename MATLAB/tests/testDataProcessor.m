@@ -51,6 +51,27 @@ assert(isfield(result.Left, 'TA_filtered') && isfield(result.Left, 'GM_filtered'
 data.Time(10) = data.Time(10) + 0.1;
 save(matPath, 'data', '-append');
 assertError(@() processor.processEMGMat(matPath, {'Left.TA'}), 'DataProcessor:InvalidSampleRate');
+% Synchronization uses a real rising edge, including after an initial high.
+syncData.Time = (1000:100:1500)';
+syncData.sync_state = [0; 0; 1; 1; 0; 1];
+[aligned, syncIndex] = DataProcessor.alignSyncTime(syncData, 0.001, 0.5, 'Test');
+assert(syncIndex == 3 && aligned(syncIndex) == 0);
+assert(max(abs(aligned - (-0.2:0.1:0.3)')) < 1e-12);
+syncData.sync_state = [1; 1; 0; 0; 1; 1];
+originalSyncData = syncData;
+[aligned, syncIndex] = DataProcessor.alignSyncTime(syncData, 0.001, 0.5, 'Test');
+assert(syncIndex == 5 && aligned(syncIndex) == 0);
+assert(max(abs(aligned - (-0.4:0.1:0.1)')) < 1e-12);
+assert(isequal(syncData, originalSyncData));
+% Multiple triggers still select the first observed low-to-high edge.
+syncData.sync_state = [1; 0; 1; 0; 1; 1];
+[~, syncIndex] = DataProcessor.alignSyncTime(syncData, 0.001, 0.5, 'Test');
+assert(syncIndex == 3);
+for states = {[1;1;1;1;1;1], [0;0;0;0;0;0], [1;1;1;0;0;0]}
+    syncData.sync_state = states{1};
+    assertError(@() DataProcessor.alignSyncTime(syncData, 0.001, 0.5, 'Test'), ...
+        'DataProcessor:MissingSyncOnset');
+end
 disp('DataProcessor checks passed.');
 end
 
