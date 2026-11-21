@@ -1,0 +1,199 @@
+clc; clear; close all;
+
+%% ===============================
+% [1] 데이터 로드
+% ===============================
+
+base_path = 'F:\Rodex\Experiment\2026_TMECH\Result\n=6';
+
+ix = 8;  
+iy = 15;
+
+exclude_tags = [2 5 6 7 12];   % 제외할 rat
+
+d = dir(base_path);
+d = d([d.isdir]);  
+d = d(~ismember({d.name},{'.','..'}));
+
+is_rat = startsWith({d.name}, '#');
+rat_dirs = d(is_rat);
+
+% tag 추출
+tags = zeros(length(rat_dirs),1);
+for i = 1:length(rat_dirs)
+    tags(i) = str2double(rat_dirs(i).name(2:end));
+end
+
+% 제외 적용
+keep_mask = ~ismember(tags, exclude_tags);
+rat_dirs = rat_dirs(keep_mask);
+tags     = tags(keep_mask);
+
+n = length(rat_dirs);
+fprintf('Detected %d rats\n', n);
+
+raw = struct('x',[],'y',[]);
+raw(n).x = []; raw(n).y = [];
+
+x_all = [];
+y_all = [];
+
+for k = 1:n
+
+    rat_path = fullfile(base_path, rat_dirs(k).name);
+
+    target_path = fullfile(rat_path, ...
+        'intact_Exo shoe_Regression', ...
+        'Cycle Period + Offset 추정 인덱스');
+
+    csv_files = dir(fullfile(target_path, '*.csv'));
+
+    if isempty(csv_files)
+        warning('No CSV in %s', target_path);
+        continue;
+    end
+
+    fp = fullfile(target_path, csv_files(1).name);
+    fprintf('Loading (%d): %s\n', tags(k), fp);
+
+    T = readtable(fp, 'VariableNamingRule','preserve', 'TextType','string');
+
+    if width(T) < max(ix, iy)
+        warning('Column 부족 → skip');
+        continue;
+    end
+
+    xk = T{:, ix};
+    yk = T{:, iy};
+
+    if ~isnumeric(xk), xk = str2double(xk); end
+    if ~isnumeric(yk), yk = str2double(yk); end
+
+    m = isfinite(xk) & isfinite(yk);
+    xk = xk(m);
+    yk = yk(m);
+
+    raw(k).x = xk;
+    raw(k).y = yk;
+
+    x_all = [x_all; xk];
+    y_all = [y_all; yk];
+end
+
+%% ===============================
+% [2] 개별 regression
+% ===============================
+
+slopes = zeros(n,1);
+intercepts = zeros(n,1);
+r2_each = zeros(n,1);
+
+for k = 1:n
+
+    mdl_k = fitlm(raw(k).x, raw(k).y);
+
+    intercepts(k) = mdl_k.Coefficients.Estimate(1);
+    slopes(k)     = mdl_k.Coefficients.Estimate(2);
+    r2_each(k)    = mdl_k.Rsquared.Adjusted;
+
+end
+
+%% ===============================
+% [3] 통계 분석
+% ===============================
+
+mean_slope = mean(slopes);
+std_slope  = std(slopes);
+CV_slope   = std_slope / mean_slope * 100;
+
+fprintf('\n=== Individual slope statistics ===\n');
+fprintf('Mean slope = %.6f\n', mean_slope);
+fprintf('Std slope  = %.6f\n', std_slope);
+fprintf('CV         = %.2f %%\n', CV_slope);
+
+%% ===============================
+% [4] 전체 regression
+% ===============================
+
+mdl = fitlm(x_all, y_all, 'RobustOpts','on');
+
+b0 = mdl.Coefficients.Estimate(1);
+b1 = mdl.Coefficients.Estimate(2);
+rsq = mdl.Rsquared.Adjusted;
+
+xq = linspace(min(x_all), max(x_all), 200)';
+[yhat, yCI] = predict(mdl, xq, 'Prediction','observation');
+yhat = predict(mdl, xq);
+
+fprintf('\n=== Combined model ===\n');
+fprintf('y = %.6f + %.6f * x\n', b0, b1);
+fprintf('Adjusted R^2 = %.4f\n', rsq);
+
+%% ===============================
+% [5] 플로팅 (논문용)
+% ===============================
+
+fontsize = 23;
+
+figure('Color','w'); hold on;
+
+C_data = lines(n);
+
+markerStyles = {'o','s','^','d','v','>','<','p','h','x','+'};
+
+% scatter
+for k = 1:n
+    scatter(raw(k).x, raw(k).y, 40, ...
+        'filled', ...
+        'MarkerFaceColor', C_data(k,:), ...
+        'MarkerFaceAlpha', 0.6, ...
+        'MarkerEdgeColor','k', ...
+        'MarkerEdgeAlpha',0.15, ...
+        'Marker', markerStyles{mod(k-1,numel(markerStyles))+1});
+end
+% 
+% % 개별 regression (얇은 선)
+% for k = 1:n
+%     xk = raw(k).x;
+%     yk = raw(k).y;
+% 
+%     p = polyfit(xk, yk, 1);
+%     x_line = linspace(min(xk), max(xk), 50);
+%     y_line = polyval(p, x_line);
+% 
+%     plot(x_line, y_line, '--', ...
+%         'Color', C_data(k,:), ...
+%         'LineWidth', 1);
+% end
+
+% 전체 regression (굵은 선)
+plot(xq, yhat, '-', 'LineWidth', 2.5, 'Color', [1 0 0]);
+
+% prediction band
+if all(isfinite(yCI(:)))
+    plot(xq, yCI(:,1), '--', 'Color', [1 0 0]);
+    plot(xq, yCI(:,2), '--', 'Color', [1 0 0]);
+end
+
+xlabel('$T_{r}$ (s)', 'Interpreter','latex');
+ylabel('$\Delta t$ (s)', 'Interpreter','latex');
+
+set(gca, 'FontSize', fontsize, 'FontName', 'Times New Roman');
+grid off;
+
+legend({'Rat 1', 'Rat 2', 'Rat 3', 'Rat 4', 'Rat 4' 'Individual fits','Combined model'}, ...
+    'Location','best','Box','off');
+
+%% ===============================
+% [6] 논문용 해석 출력
+% ===============================
+
+fprintf('\n=== Interpretation ===\n');
+
+if CV_slope < 10
+    fprintf('Slopes are highly consistent → unified model is strongly justified\n');
+elseif CV_slope < 20
+    fprintf('Slopes are moderately consistent → unified model is acceptable\n');
+else
+    fprintf('Slopes vary significantly → individual models recommended\n');
+end
