@@ -13,6 +13,55 @@ classdef DataProcessor
             obj.Config = EMGConfig();
         end
 
+        function rmse = calculateRMSE(~, reference, measured)
+            %CALCULATERMSE Compare samples on the same time axis, in the input units.
+            validateattributes(reference, {'numeric'}, {'vector', 'real', 'finite', 'nonempty'});
+            validateattributes(measured, {'numeric'}, {'vector', 'real', 'finite', 'numel', numel(reference)});
+            errorSignal = double(measured(:)) - double(reference(:));
+            rmse = norm(errorSignal) / sqrt(numel(errorSignal));
+        end
+
+        function [delaySeconds, phaseDelayDegrees] = calculatePhaseDelay(~, timeSeconds, reference, measured, frequencyHz)
+            %CALCULATEPHASEDELAY Fit both signals at the specified excitation frequency.
+            % Supply seconds and one sample per timestamp for each signal.
+            % Positive means the measurement lags. Phase is wrapped to [-180, 180).
+            validateattributes(timeSeconds, {'numeric'}, {'vector', 'real', 'finite', 'nonempty'});
+            validateattributes(reference, {'numeric'}, {'vector', 'real', 'finite', 'numel', numel(timeSeconds)});
+            validateattributes(measured, {'numeric'}, {'vector', 'real', 'finite', 'numel', numel(timeSeconds)});
+            validateattributes(frequencyHz, {'numeric'}, {'scalar', 'real', 'finite', 'positive'});
+
+            timeSeconds = double(timeSeconds(:));
+            intervals = diff(timeSeconds);
+            if numel(timeSeconds) < 4 || any(intervals <= 0)
+                error('DataProcessor:InvalidTime', 'Phase estimation requires at least four strictly increasing timestamps.');
+            end
+            timeSeconds = timeSeconds - timeSeconds(1);
+            frequencyHz = double(frequencyHz);
+            if timeSeconds(end) * frequencyHz < 1 - 10*eps
+                error('DataProcessor:SignalTooShort', 'Select at least one full period of the excitation frequency.');
+            end
+            if frequencyHz >= 1 / (2 * median(intervals))
+                error('DataProcessor:InvalidFrequency', 'The excitation frequency must be below half the median sample rate.');
+            end
+
+            % Fit an independent offset, cosine coefficient, and sine coefficient per signal.
+            radians = 2*pi*frequencyHz*timeSeconds;
+            basis = [ones(size(radians)), cos(radians), sin(radians)];
+            if rank(basis) < size(basis, 2)
+                error('DataProcessor:UndefinedPhase', 'Timestamps do not cover enough phases of the excitation.');
+            end
+            signals = [double(reference(:)), double(measured(:))];
+            coefficients = basis \ signals;
+            components = complex(coefficients(2, :), coefficients(3, :));
+            if any(abs(components) <= 32 * eps(max(abs(signals), [], 1)))
+                error('DataProcessor:UndefinedPhase', 'Both signals must have a measurable component at the excitation frequency.');
+            end
+
+            phaseDifference = rad2deg(angle(components(2)) - angle(components(1)));
+            phaseDelayDegrees = mod(phaseDifference + 180, 360) - 180;
+            delaySeconds = phaseDelayDegrees / (360 * frequencyHz);
+        end
+
         function filtered = filterEMG(obj, raw, sampleRateHz)
             %FILTEREMG Return an N-by-1 voltage envelope from signed ADC counts.
             % Optional sampleRateHz overrides config.SampleRateHz.

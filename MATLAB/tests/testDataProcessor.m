@@ -1,10 +1,29 @@
 function testDataProcessor()
-%TESTDATAPROCESSOR Check envelope scale, rejection, and MAT preservation.
+%TESTDATAPROCESSOR Check tracking metrics, EMG filtering, and MAT preservation.
 matlabDirectory = fileparts(fileparts(mfilename('fullpath')));
 originalPath = path;
 restorePath = onCleanup(@() path(originalPath)); %#ok<NASGU>
 addpath(fullfile(matlabDirectory, 'Class'));
 processor = DataProcessor();
+assert(processor.calculateRMSE([1 2 3], [3; 4; 5]) == 2);
+
+% Recover a fractional-sample delay despite different offsets and amplitudes.
+phaseTime = (0:0.01:4)' + 0.001*sin((0:400)');
+frequencyHz = 2;
+knownDelay = 0.0325;
+reference = 50 + 10*cos(2*pi*frequencyHz*phaseTime);
+measured = 47 + 6*cos(2*pi*frequencyHz*(phaseTime-knownDelay));
+[delay, phase] = processor.calculatePhaseDelay(phaseTime, reference, measured, frequencyHz);
+assert(abs(delay - knownDelay) < 1e-10);
+assert(abs(phase - 360*frequencyHz*knownDelay) < 1e-8);
+[delay, phase] = processor.calculatePhaseDelay(phaseTime, measured, reference, frequencyHz);
+assert(abs(delay + knownDelay) < 1e-10);
+assert(abs(phase + 360*frequencyHz*knownDelay) < 1e-8);
+assertError(@() processor.calculatePhaseDelay(phaseTime, reference, ones(size(measured)), frequencyHz), ...
+    'DataProcessor:UndefinedPhase');
+assertError(@() processor.calculatePhaseDelay([0 0.01 0.02 0.03], reference(1:4), measured(1:4), frequencyHz), ...
+    'DataProcessor:SignalTooShort');
+
 fs = processor.Config.SampleRateHz;
 time = (0:1/fs:5-1/fs)';
 amplitude = 100000;
