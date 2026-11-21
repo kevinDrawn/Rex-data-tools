@@ -6,6 +6,7 @@
 
 - `Class/DataPacker.m`: CSV 읽기, 열 매핑 검증, 데이터 패킹 및 MAT 저장
 - `Class/config/RexConfig.m`: Rex의 목표 필드 경로 10개 정의
+- `Class/config/Rex_TMECHConfig.m`: TMECH 1 kHz CSV의 필드 경로와 기본 헤더 매핑
 - `Class/DataPlotter.m`: 데이터 그룹별 subplot 및 시간 범위 선택
 - `Class/config/PlotConfig.m`: 그래프 스타일과 좌우 신호 색상 정의
 - `Class/DataProcessor.m`: 지정한 raw EMG 처리와 MAT 파일 확장
@@ -48,7 +49,7 @@ data = packer.pack(LOGGING_PATH, columnMap, CSV_READ_OPTIONS{:});
 packer.saveMat(data, MAT_PATH);
 ```
 
-`columnMap`은 결과 `data`와 같은 필드 구조를 가지며, 각 값은 CSV 열 번호입니다.
+`columnMap`은 결과 `data`와 같은 필드 구조를 가지며, 각 값은 CSV 열 번호 또는 헤더 이름입니다.
 
 Rex의 `columnMap.sync_state`는 선택 항목입니다. 필드를 생략하거나 `NaN` 또는
 `[]`로 두면 `data.sync_state` 없이 패킹 및 MAT 저장이 가능합니다.
@@ -70,7 +71,7 @@ CSV 헤더는 MATLAB의 자동 감지를 사용하므로 실제 파일에 맞는
 헤더가 없는 CSV는 실행 스크립트에서
 `CSV_READ_OPTIONS = {'ReadVariableNames', false};`로 설정할 수 있습니다.
 
-MAT 파일에는 `data`라는 구조체 변수가 저장됩니다.
+Rex MAT 파일에는 다음과 같이 `data` 구조체가 저장됩니다.
 
 ```text
 data
@@ -95,8 +96,26 @@ data
 
 새 프로젝트를 추가할 때는 `Class/config/<프로젝트명>Config.m` 함수를 추가하고
 반환 구조체에 `ProjectType`과 `Fields`를 정의합니다. 클래스는 프로젝트명으로
-config를 조회합니다. config에는 CSV 열 번호를 저장하지 않습니다.
+config를 조회합니다. 알려진 헤더를 기본 매핑에 사용하려면 필수 필드와 같은 순서로
+`ColumnNames`를 정의합니다.
 실행 스크립트의 프로젝트 타입과 열 매핑도 해당 프로젝트에 맞게 변경합니다.
+
+## Rex_TMECH 로깅 데이터
+
+`TMECH_2026/Rex/Data_entire_plotting/exec_packLoggingData.m`에서 `LOGGING_PATH`를
+지정하고 실행합니다. `DataPacker("Rex_TMECH")`가 TMECH CSV의 헤더를 기준으로 열을
+찾으며, `MAT_PATH`가 비어 있으면 CSV 옆에 같은 이름의 MAT를 저장합니다.
+
+| CSV 열 | MAT 구조체 필드 |
+| --- | --- |
+| `time_ms`, `actual_time_ms`, `drift_ms` | `data.Time`, `data.ActualTime`, `data.Drift` |
+| `L_deg`, `R_deg`, `M_deg`, `q_nominal_deg` | `data.Left.Angle`, `data.Right.Angle`, `data.Assisted.Angle`, `data.Nominal.Angle` |
+| `Torque_CAN_L`, `Torque_CAN_R`, `Torque_axis` | `data.Left.Torque`, `data.Right.Torque`, `data.Axial.Torque` |
+| `q_compensation` | `data.Compensation.Torque` |
+| `sync_state` | `data.sync_state` |
+
+그림은 시간축을 공유하는 각도, 측정 토크, 보상 토크, 동기 입력의 네 subplot으로 구성됩니다.
+`PLOT_TIME_RANGE = []`는 전체 기록을 표시하고, `[시작 끝]`은 ms 단위로 지정합니다.
 
 ## 그래프 설정
 

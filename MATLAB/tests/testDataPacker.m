@@ -79,6 +79,35 @@ assertError(@() mocap.pack(csvA, rmfield(mocapMap, 'sync_state')), ...
 mocapMap.sync_state = NaN;
 assertFails(@() mocap.pack(csvA, mocapMap));
 
+tmech = DataPacker('Rex_TMECH');
+assert(strcmp(tmech.ProjectType, 'Rex_TMECH'));
+tmechMap = tmech.getColumnMap();
+tmechMap.Time = "time_ms";
+tmechTable = array2table(reshape(1:60, 5, 12), 'VariableNames', ...
+    {'time_ms', 'actual_time_ms', 'drift_ms', 'L_deg', 'R_deg', 'M_deg', ...
+     'Torque_axis', 'Torque_CAN_L', 'Torque_CAN_R', 'q_nominal_deg', ...
+     'q_compensation', 'sync_state'});
+tmechCsv = fullfile(folder, 'rex_tmech.csv');
+writetable(tmechTable(:, [10 3 12 1 8 2 6 11 4 7 9 5]), tmechCsv);
+tmechData = tmech.pack(tmechCsv, tmechMap);
+assert(isequal(tmechData.Time, tmechTable.time_ms));
+assert(isequal(tmechData.ActualTime, tmechTable.actual_time_ms));
+assert(isequal(tmechData.Drift, tmechTable.drift_ms));
+assert(isequal(tmechData.Left.Angle, tmechTable.L_deg));
+assert(isequal(tmechData.Right.Angle, tmechTable.R_deg));
+assert(isequal(tmechData.Assisted.Angle, tmechTable.M_deg));
+assert(isequal(tmechData.Nominal.Angle, tmechTable.q_nominal_deg));
+assert(isequal(tmechData.Axial.Torque, tmechTable.Torque_axis));
+assert(isequal(tmechData.Left.Torque, tmechTable.Torque_CAN_L));
+assert(isequal(tmechData.Right.Torque, tmechTable.Torque_CAN_R));
+assert(isequal(tmechData.Compensation.Torque, tmechTable.q_compensation));
+assert(isequal(tmechData.sync_state, tmechTable.sync_state));
+tmech.saveMat(tmechData, output);
+loaded = load(output);
+assert(isequal(loaded.data, tmechData));
+writetable(removevars(tmechTable, 'q_nominal_deg'), tmechCsv);
+assertError(@() tmech.pack(tmechCsv, tmechMap), 'DataPacker:MissingColumn');
+
 missing = rmfield(mappingA, 'Time');
 assertError(@() packer.pack(csvA, missing), 'DataPacker:MappingMismatch');
 extra = mappingA;

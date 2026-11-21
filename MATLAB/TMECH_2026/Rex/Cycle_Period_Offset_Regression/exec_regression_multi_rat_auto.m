@@ -4,7 +4,7 @@ addpath(fullfile(pwd, 'function'));
 %% ===============================
 % [0] 설정
 % ===============================
-base_path = 'D:\park\01. STEAM\[Paper] 논문작성\2027_ICRA\Data';
+base_path = 'C:\ncs\C_Logger\Rex-data-tools\exec\TMECH_2026\logging';
 rat_id = 26;
 
 % 분석할 조건
@@ -33,14 +33,11 @@ n = numel(raw);
 %% ===============================
 % [3] Combined Regression
 % ===============================
-
 outlier_threshold = 2;
-
 result = combined_regression( ...
     x_all, ...
     y_all, ...
     outlier_threshold);
-
 %% ===============================
 % [4] Combined Regression Plot
 % ===============================
@@ -52,7 +49,6 @@ plot_combined_regression( ...
 %% ===============================
 % [5] Phase Offset
 % ========================36=======
-
 phase_result = plot_phase_offset( ...
     result.x_clean, ...
     result.y_clean, ...

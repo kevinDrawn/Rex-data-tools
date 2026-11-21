@@ -40,20 +40,25 @@ classdef DataPacker
 
         function columnMap = getColumnMap(obj)
             %GETCOLUMNMAP Get the project's mapping template.
-            % Replace required NaNs with 1-based CSV columns. Optional fields
-            % may be omitted or left as NaN / [] to exclude them from data.
+            % Replace required NaNs with 1-based CSV columns or header names.
+            % A config can provide default names for its required fields.
+            % Optional fields may be omitted or left as NaN / [].
             columnMap = struct();
             fields = [obj.Config.Fields; obj.Config.OptionalFields];
             for index = 1:numel(fields)
                 parts = strsplit(fields{index}, '.');
-                columnMap = setfield(columnMap, parts{:}, NaN); %#ok<SFLD>
+                column = NaN;
+                if isfield(obj.Config, 'ColumnNames') && index <= numel(obj.Config.Fields)
+                    column = obj.Config.ColumnNames{index};
+                end
+                columnMap = setfield(columnMap, parts{:}, column); %#ok<SFLD>
             end
         end
 
         function data = pack(obj, csvPath, columnMap, varargin)
             %PACK Read a CSV and map each signal to an N-by-1 vector.
-            % columnMap mirrors the output structure; its leaves are 1-based
-            % CSV column numbers. Additional arguments go to readtable, e.g.
+            % columnMap mirrors the output structure. Each leaf is a 1-based
+            % CSV column number or header name. Pass readtable options, e.g.
             % pack(..., 'NumHeaderLines', 2).
             if ~isfile(csvPath)
                 error('DataPacker:MissingCSV', 'CSV file does not exist: %s.', csvPath);
@@ -65,12 +70,12 @@ classdef DataPacker
             if height(csv) == 0
                 error('DataPacker:EmptyCSV', 'CSV contains no data rows.');
             end
-            fields = obj.validateMapping(columnMap, width(csv));
+            [fields, columns] = obj.validateMapping(columnMap, csv.Properties.VariableNames);
             data = struct();
             for index = 1:numel(fields)
                 fieldPath = fields{index};
                 parts = strsplit(fieldPath, '.');
-                column = getfield(columnMap, parts{:}); %#ok<GFLD>
+                column = columns(index);
                 values = csv{:, column};
                 if ~isnumeric(values) || ~isreal(values) || size(values, 2) ~= 1
                     error('DataPacker:NonNumericSignal', ...
@@ -93,7 +98,7 @@ classdef DataPacker
     end
 
     methods (Access = private)
-        function fields = validateMapping(obj, columnMap, numberOfColumns)
+        function [fields, columns] = validateMapping(obj, columnMap, variableNames)
             expected = obj.Config.Fields;
             actual = obj.leafPaths(columnMap, '');
             missing = setdiff(expected, actual);
@@ -104,6 +109,7 @@ classdef DataPacker
                     strjoin(missing, ', '), strjoin(extra, ', '));
             end
             fields = cell(0, 1);
+            columns = zeros(0, 1);
             for index = 1:numel(actual)
                 fieldPath = actual{index};
                 parts = strsplit(fieldPath, '.');
@@ -113,10 +119,19 @@ classdef DataPacker
                         (isscalar(column) && isnan(column)))
                     continue;
                 end
+                if (ischar(column) && isrow(column)) || (isstring(column) && isscalar(column))
+                    columnName = column;
+                    column = find(strcmp(variableNames, columnName), 1);
+                    if isempty(column)
+                        error('DataPacker:MissingColumn', ...
+                            'CSV column "%s" is required for %s.', columnName, fieldPath);
+                    end
+                end
                 validateattributes(column, {'numeric'}, ...
-                    {'scalar', 'real', 'finite', 'integer', 'positive', '<=', numberOfColumns}, ...
+                    {'scalar', 'real', 'finite', 'integer', 'positive', '<=', numel(variableNames)}, ...
                     'DataPacker.pack', fieldPath);
                 fields{end + 1, 1} = fieldPath; %#ok<AGROW>
+                columns(end + 1, 1) = column; %#ok<AGROW>
             end
         end
 

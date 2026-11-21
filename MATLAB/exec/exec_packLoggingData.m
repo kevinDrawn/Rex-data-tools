@@ -1,12 +1,12 @@
 %PACKLOGGINGDATA Configure the input and mapping, then run the entire script.
 
 %% Input settings
-LOGGING_PATH = "D:\park\01. STEAM\[STEAM] Animal Experiment\20261103_4ch_EMG\#39\IE\logging\rex_live_20261103_164747_195.csv";
+LOGGING_PATH ="C:\ncs\C_Logger\Rex-data-tools\exec\TMECH_2026\logging\rex_tmech_live_20261121_201958_670.csv";
 PROJECT_TYPE = "Rex";
 
 % Empty: save beside the CSV with the same base name.
 % Alternatively, set the absolute destination .mat path.
-MAT_PATH = "D:\park\01. STEAM\[STEAM] Animal Experiment\20261103_4ch_EMG\#39\IE\logging\rex_live_20261103_164747_195.mat";
+MAT_PATH = "";
 
 % Options passed to readtable. For a CSV without a header, use:
 % CSV_READ_OPTIONS = {'ReadVariableNames', false};

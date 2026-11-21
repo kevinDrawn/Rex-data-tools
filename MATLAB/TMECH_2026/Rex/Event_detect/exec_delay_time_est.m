@@ -4,7 +4,7 @@ clc; clear; close all;
 addpath(fullfile(pwd, 'function'));
 
 % 프로젝트 Root Directory
-root_dir = 'D:\park\01. STEAM\[Paper] 논문작성\2027_ICRA\Data\#26\Exo_shoe_1';
+root_dir = 'C:\ncs\C_Logger\Rex-data-tools\exec\TMECH_2026\logging';
 
 %% ---------------- 사용자 설정 ----------------
 cfg.col_t     = 1;     % CSV의 time 열 (없으면 비워두면 자동생성)
@@ -18,7 +18,7 @@ cfg.col_TA = 10;
 cfg.col_GM = 11;
 
 cfg.fs        = [];    % 샘플링 주파수(비우면 time으로 추정)
-cfg.lpf_on    = Off;  % 저역통과 필터 사용
+cfg.lpf_on    = false;  % 저역통과 필터 사용
 cfg.fc        = 15;    % Hz
 cfg.order     = 1;
 
@@ -39,16 +39,14 @@ Ts = data.Ts;
 %% ===============================
 % Full-Graph
 % ===============================
-
 figure(1);
 plot(t, left_f, t, right_f);
 grid on;
 axis auto;
-ekfms 
+ 
 xlabel('Time (s)');
 ylabel('Ankle angle (deg)');
 legend('Left angle', 'Right angle', 'Orientation', 'horizontal');
-
 set(gca, 'FontName', 'Times New Roman', 'FontSize', 25);
 
 %% ===============================
@@ -58,19 +56,19 @@ interval_mode = 'auto';
 
 t_interval = make_time_intervals( ...
     interval_mode, ...
-    'Start', 6, ...
-    'End',   153, ...
-    'Step',  4);
+    'Start', 0, ...
+    'End',   2, ...
+    'Step',  2);
 
-interval_mode = 'manual';
+% interval_mode = 'manual';
+% 
+% manual_interval = [ ...
+%     62.246    64.8365;
+% ];
 
-manual_interval = [ ...
-    62.246    64.8365;
-];
-
-t_interval = make_time_intervals( ...
-    interval_mode, ...
-    'Intervals', manual_interval);
+% t_interval = make_time_intervals( ...
+%     interval_mode, ...
+%     'Intervals', manual_interval);
 
 [main_left, main_right] = ...
     detect_gait_peaks( ...
