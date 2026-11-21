@@ -15,6 +15,11 @@ bool csv_writer_open(CsvWriter *writer, const char *filename)
 
 bool csv_writer_attach(CsvWriter *writer, FILE *file)
 {
+    return csv_writer_attach_format(writer, file, REX_LOG_EMG);
+}
+
+bool csv_writer_attach_format(CsvWriter *writer, FILE *file, RexLogFormat format)
+{
     if (writer == NULL || writer->file != NULL || file == NULL) {
         if (file != NULL) fclose(file);
         return false;
@@ -22,10 +27,12 @@ bool csv_writer_attach(CsvWriter *writer, FILE *file)
     writer->used = 0;
     writer->failed = false;
     writer->file = file;
+    writer->format = format;
     if (fprintf(writer->file,
         "time_ms,actual_time_ms,drift_ms,"
-        "L_deg,R_deg,M_deg,Torque_axis,Torque_CAN_L,Torque_CAN_R,"
-        "L_TB_EMG,L_GT_EMG,R_TB_EMG,R_GT_EMG,sync_state\n") < 0) {
+        "L_deg,R_deg,M_deg,Torque_axis,Torque_CAN_L,Torque_CAN_R,%s,sync_state\n",
+        format == REX_LOG_TMECH ? "q_nominal_deg,q_compensation" :
+                                 "L_TB_EMG,L_GT_EMG,R_TB_EMG,R_GT_EMG") < 0) {
         fclose(writer->file);
         writer->file = NULL;
         writer->failed = true;
@@ -64,25 +71,37 @@ bool csv_writer_close(CsvWriter *writer)
 }
 
 bool csv_writer_write_sample(CsvWriter *writer, const RexBatch *batch,
-                             size_t emg_index, double time_ms, double actual_time_ms)
+                             size_t sample_index, double time_ms, double actual_time_ms)
 {
     if (writer == NULL || writer->file == NULL || writer->failed ||
-        batch == NULL || emg_index >= LOG_BATCH_EMG) return false;
-    size_t exo_index = emg_index / REX_EMG_PER_EXO;
+        batch == NULL || sample_index >= rex_samples_per_batch(writer->format)) return false;
+    const bool tmech = writer->format == REX_LOG_TMECH;
+    const size_t exo_index = tmech ? sample_index : sample_index / REX_EMG_PER_EXO;
     char line[256];
     int length = snprintf(line, sizeof(line),
-        "%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,"
-        "%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 ",%u\n",
+        "%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.7f,%.7f,%.7f,",
         time_ms, actual_time_ms, time_ms - actual_time_ms,
         rex_angle_degrees(batch->qL[exo_index]), rex_angle_degrees(batch->qR[exo_index]),
         rex_angle_degrees(batch->qMirror[exo_index]), rex_torque_value(batch->torque_axis[exo_index]),
-        rex_torque_value(batch->torque_can_L[exo_index]), rex_torque_value(batch->torque_can_R[exo_index]),
-        batch->emg[REX_L_TB][emg_index], batch->emg[REX_L_GT][emg_index],
-        batch->emg[REX_R_TB][emg_index], batch->emg[REX_R_GT][emg_index], (unsigned)batch->sync_state[exo_index]);
+        rex_torque_value(batch->torque_can_L[exo_index]), rex_torque_value(batch->torque_can_R[exo_index]));
     if (length < 0 || (size_t)length >= sizeof(line)) {
         writer->failed = true;
         return false;
     }
+    const size_t remaining = sizeof(line) - (size_t)length;
+    const unsigned sync = batch->sync_state[exo_index];
+    const int suffix = tmech ?
+        snprintf(line + length, remaining, "%.6f,%.7f,%u\n",
+            rex_angle_degrees(batch->q_nominal[exo_index]),
+            rex_torque_value(batch->q_compensation[exo_index]), sync) :
+        snprintf(line + length, remaining, "%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 ",%u\n",
+            batch->emg[REX_L_TB][sample_index], batch->emg[REX_L_GT][sample_index],
+            batch->emg[REX_R_TB][sample_index], batch->emg[REX_R_GT][sample_index], sync);
+    if (suffix < 0 || (size_t)suffix >= remaining) {
+        writer->failed = true;
+        return false;
+    }
+    length += suffix;
     if (writer->used + (size_t)length >= sizeof(writer->buffer) &&
         !csv_writer_flush(writer)) return false;
     memcpy(writer->buffer + writer->used, line, (size_t)length);

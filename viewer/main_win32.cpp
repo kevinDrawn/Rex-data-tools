@@ -116,6 +116,13 @@ static LRESULT WINAPI window_proc(HWND window, UINT message, WPARAM wp, LPARAM l
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int show) {
+#ifdef REX_TMECH_VIEWER
+    constexpr RexLogFormat format = REX_LOG_TMECH;
+    const wchar_t* title = L"Rex TMECH 2026 Logger";
+#else
+    constexpr RexLogFormat format = REX_LOG_EMG;
+    const wchar_t* title = L"Rex EMG Logger";
+#endif
     const bool smoke_test = std::wstring(command_line).find(L"--smoke-test") != std::wstring::npos;
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc = {};
@@ -126,7 +133,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int show)
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"RexDataViewer";
     if (!RegisterClassExW(&wc)) return 1;
-    HWND window = CreateWindowW(wc.lpszClassName, L"Rex Data Viewer", WS_OVERLAPPEDWINDOW,
+    HWND window = CreateWindowW(wc.lpszClassName, title, WS_OVERLAPPEDWINDOW,
         80, 60, 1440, 960, nullptr, nullptr, instance, nullptr);
     if (!window || !create_device(window)) {
         cleanup();
@@ -165,7 +172,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int show)
     UpdateWindow(window);
     int exit_code = 0;
     {
-        rex::ViewerUi ui;
+        rex::ViewerUi ui(format);
         bool done = false;
         unsigned frames = 0;
         while (!done) {

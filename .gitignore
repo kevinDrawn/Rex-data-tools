@@ -1,4 +1,5 @@
 /build/
+/exec/
 /MATLAB/experiment/
 /build-*/
 /logging/

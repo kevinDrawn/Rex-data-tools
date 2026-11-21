@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <locale>
 #include <set>
@@ -48,7 +49,7 @@ double number(const std::string& text) {
 SignalGroup group_of(const std::string& name) {
     if (name == "sync_state") return SignalGroup::Sync;
     if (name.find("EMG") != std::string::npos) return SignalGroup::Emg;
-    if (name.find("Torque") != std::string::npos) return SignalGroup::Torque;
+    if (name.find("Torque") != std::string::npos || name == "q_compensation") return SignalGroup::Torque;
     if (name.find("_deg") != std::string::npos) return SignalGroup::Angle;
     return SignalGroup::Other;
 }
@@ -106,19 +107,23 @@ LogData load_csv(const std::filesystem::path& path) {
     return read_csv(input, path.filename().u8string());
 }
 
-LogData make_demo() {
-    LogData data = make_live_data();
+LogData make_demo(RexLogFormat format) {
+    LogData data = make_live_data(format);
     data.name = "Demo data (not a measurement)";
-    const std::size_t count = 60 * 1000000 / REX_EMG_SAMPLE_PERIOD_US;
+    const auto period_us = rex_sample_period_us(format);
+    const std::size_t count = 60 * 1000000 / period_us;
     for (std::size_t i = 0; i < count; ++i) {
-        const double t = i * (REX_EMG_SAMPLE_PERIOD_US / 1000000.0);
+        const double t = i * (period_us / 1000000.0);
         data.seconds.push_back(t);
         for (std::size_t c = 0; c < data.channels.size(); ++c) {
             const double phase = c * 0.7;
             double y;
             if (data.channels[c].group == SignalGroup::Sync) y = std::fmod(t, 2.0) >= 1.0 ? 1.0 : 0.0;
-            else if (c < 3) y = 30 * std::sin(t * 4 + phase);
-            else if (c < 6) y = 0.7 * std::sin(t * 4 + phase);
+            else if (data.channels[c].group == SignalGroup::Angle) y = 30 * std::sin(t * 4 + phase);
+            else if (data.channels[c].group == SignalGroup::Torque) {
+                y = 0.7 * std::sin(t * 4 + phase);
+                if (format == REX_LOG_TMECH && c < 6) y += 0.15 * std::sin(t * 240 + phase);
+            }
             else {
                 const double envelope = std::pow(std::max(0.0, std::sin(t * 4 + phase)), 4);
                 y = envelope * (100000 * std::sin(t * 700 + phase) +
@@ -130,29 +135,47 @@ LogData make_demo() {
     return data;
 }
 
-LogData make_live_data() {
+LogData make_live_data(RexLogFormat format) {
     LogData data;
     data.name = "Live MCU data";
-    const char* names[] = {"L_deg", "R_deg", "M_deg", "Torque_axis", "Torque_CAN_L",
-        "Torque_CAN_R", "L_TB_EMG", "L_GT_EMG", "R_TB_EMG", "R_GT_EMG", "sync_state"};
+    const char* names[] = {"L_deg", "R_deg", "M_deg", "Torque_axis", "Torque_CAN_L", "Torque_CAN_R"};
     for (auto name : names) data.channels.push_back({name, group_of(name), {}});
+    if (format == REX_LOG_TMECH) {
+        data.channels.push_back({"q_nominal_deg", SignalGroup::Angle, {}});
+        data.channels.push_back({"q_compensation", SignalGroup::Torque, {}});
+    } else {
+        for (auto name : {"L_TB_EMG", "L_GT_EMG", "R_TB_EMG", "R_GT_EMG"})
+            data.channels.push_back({name, SignalGroup::Emg, {}});
+    }
+    data.channels.push_back({"sync_state", SignalGroup::Sync, {}});
     return data;
 }
 
-void append_live_batch(LogData& data, const RexBatch& batch, uint64_t first_sample) {
-    if (data.channels.size() != 11) throw std::runtime_error("Live data channel count mismatch.");
-    for (std::size_t i = 0; i < LOG_BATCH_EMG; ++i) {
-        auto j = i / REX_EMG_PER_EXO;
-        data.seconds.push_back((first_sample + i) * (REX_EMG_SAMPLE_PERIOD_US / 1000000.0));
-        double values[] = {rex_angle_degrees(batch.qL[j]), rex_angle_degrees(batch.qR[j]),
+void append_live_batch(LogData& data, const RexBatch& batch, uint64_t first_sample, RexLogFormat format) {
+    const bool tmech = format == REX_LOG_TMECH;
+    if (data.channels.size() != (tmech ? 9u : 11u))
+        throw std::runtime_error("Live data channel count mismatch.");
+    const auto period_us = rex_sample_period_us(format);
+    for (std::size_t i = 0; i < rex_samples_per_batch(format); ++i) {
+        const auto j = tmech ? i : i / REX_EMG_PER_EXO;
+        data.seconds.push_back((first_sample + i) * (period_us / 1000000.0));
+        const double values[] = {rex_angle_degrees(batch.qL[j]), rex_angle_degrees(batch.qR[j]),
             rex_angle_degrees(batch.qMirror[j]), rex_torque_value(batch.torque_axis[j]),
-            rex_torque_value(batch.torque_can_L[j]), rex_torque_value(batch.torque_can_R[j]),
-            double(batch.emg[REX_L_TB][i]), double(batch.emg[REX_L_GT][i]),
-            double(batch.emg[REX_R_TB][i]), double(batch.emg[REX_R_GT][i]), double(batch.sync_state[j])};
-        for (std::size_t c = 0; c < data.channels.size(); ++c) data.channels[c].values.push_back(values[c]);
+            rex_torque_value(batch.torque_can_L[j]), rex_torque_value(batch.torque_can_R[j])};
+        for (std::size_t c = 0; c < std::size(values); ++c)
+            data.channels[c].values.push_back(values[c]);
+        const auto first_extra = std::size(values);
+        if (tmech) {
+            data.channels[first_extra].values.push_back(rex_angle_degrees(batch.q_nominal[j]));
+            data.channels[first_extra + 1].values.push_back(rex_torque_value(batch.q_compensation[j]));
+        } else {
+            for (std::size_t c = 0; c < LOG_EMG_CHANNEL; ++c)
+                data.channels[first_extra + c].values.push_back(batch.emg[c][i]);
+        }
+        data.channels.back().values.push_back(batch.sync_state[j]);
     }
     // 최근 60초만 화면에 유지합니다. 전체 기록은 CSV에서 별도로 보존됩니다.
-    constexpr std::size_t capacity = 60 * 1000000 / REX_EMG_SAMPLE_PERIOD_US;
+    const std::size_t capacity = 60 * 1000000 / period_us;
     if (data.seconds.size() > capacity) {
         auto remove = data.seconds.size() - capacity;
         data.seconds.erase(data.seconds.begin(), data.seconds.begin() + remove);

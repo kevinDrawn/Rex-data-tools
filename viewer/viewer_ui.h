@@ -2,17 +2,20 @@
 #include "log_data.h"
 #include <future>
 #include "live_session.h"
+#include "torque_preview.h"
 
 namespace rex {
 class ViewerUi {
 public:
-    ViewerUi();
+    explicit ViewerUi(RexLogFormat format);
     void draw(void* native_window);
 private:
-    void adopt(LogData data);
+    void adopt(LogData data, bool torque_preview = false);
     void open(void* native_window);
     void clamp_range();
     void draw_live_values();
+    void draw_torque_preview_controls();
+    void update_torque_preview();
     void plot_group(SignalGroup group, const char* title, const char* unit, float height);
     LogData data_;
     std::vector<bool> selected_;
@@ -26,6 +29,7 @@ private:
         PlotPoints points;
     };
     std::vector<Cache> cache_;
+    const RexLogFormat format_;
     LiveSession live_;
     LiveStatus live_status_;
     char port_[32] = "COM7";
@@ -34,5 +38,9 @@ private:
     bool show_live_values_ = false;
     double live_received_at_ = -1, values_updated_at_ = -1;
     std::vector<double> live_values_;
+    TorquePreviewSettings torque_settings_;
+    LogData torque_preview_;
+    bool torque_preview_enabled_ = false, torque_preview_dirty_ = false;
+    double torque_preview_updated_at_ = -1;
 };
 }

@@ -18,6 +18,7 @@ struct LiveStatus {
 /* 작업 스레드만 시리얼과 파일을 소유하며 UI에는 배치 사본만 전달합니다. */
 class LiveSession {
 public:
+    explicit LiveSession(RexLogFormat format = REX_LOG_EMG) : format_(format) {}
     ~LiveSession();
     void start(std::string port, unsigned baud);
     void stop();
@@ -25,6 +26,7 @@ public:
     LiveStatus drain(std::vector<TimedBatch>& batches);
 private:
     void run(const std::string& port, unsigned baud);
+    RexLogFormat format_;
     std::thread thread_;
     std::atomic<bool> stop_{false}, record_requested_{false};
     std::mutex mutex_;

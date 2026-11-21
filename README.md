@@ -4,6 +4,17 @@ Rex 측정 데이터의 수신·저장, 실시간 표시, 분석을 위한 저�
 Windows UART CSV 로거와 24비트 EMG 디코더, ImGui·ImPlot 기반 파일·실시간 뷰어를 제공합니다.
 분석 기능은 향후 구현 예정입니다.
 
+## 로거 실행
+
+| 실행 파일 | 연결할 Central 펌웨어 |
+| --- | --- |
+| `exec/EMG/rex_viewer.exe` | 2 kHz EMG가 포함된 기존 374바이트 프레임 |
+| `exec/EMG/rex_logger.exe` | 기존 EMG 콘솔 로거 |
+| `exec/TMECH_2026/rex_tmech_viewer.exe` | TMECH 리뷰용 1 kHz, 174바이트 프레임 |
+
+Release 빌드 후 저장소 루트에서 `cmake --install build --config Release --prefix "$PWD"`를
+실행하면 위 실행 파일이 배치됩니다. [GUI 빌드와 사용법](viewer/README.md)을 참고하세요.
+
 | 폴더 | 역할 |
 | --- | --- |
 | `acquisition/` | UART 수신과 CSV 저장 |

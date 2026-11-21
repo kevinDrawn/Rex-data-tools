@@ -56,7 +56,9 @@ void LiveSession::run(const std::string& port, unsigned baud) {
         if (!SetCommTimeouts(serial, &timeouts)) throw std::runtime_error("Could not configure receive timeouts.");
         SetupComm(serial, 1 << 20, 1 << 16);
         PurgeComm(serial, PURGE_RXCLEAR);
-        FrameParser parser;
+        FrameParser parser(format_);
+        const auto samples_per_batch = rex_samples_per_batch(format_);
+        const double sample_period_ms = rex_sample_period_us(format_) / 1000.0;
         uint64_t sample = 0, record_sample = 0;
         auto record_start = Clock::now();
         auto last_flush = Clock::now();
@@ -75,13 +77,15 @@ void LiveSession::run(const std::string& port, unsigned baud) {
                 std::filesystem::create_directories(directory);
                 SYSTEMTIME now; GetLocalTime(&now);
                 wchar_t name[128];
-                swprintf_s(name, L"rex_live_%04u%02u%02u_%02u%02u%02u_%03u.csv",
+                const auto prefix = format_ == REX_LOG_TMECH ? L"rex_tmech_live" : L"rex_live";
+                swprintf_s(name, L"%ls_%04u%02u%02u_%02u%02u%02u_%03u.csv", prefix,
                     now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
                 auto filename = directory / name;
                 // Windows의 한글 경로는 와이드 문자 파일 API로 열고 공통 저장기를 연결합니다.
                 FILE* file = _wfopen(filename.c_str(), L"wb");
                 if (!file) throw std::runtime_error("Could not open CSV file.");
-                if (!csv_writer_attach(writer.get(), file)) throw std::runtime_error("Could not write CSV header.");
+                if (!csv_writer_attach_format(writer.get(), file, format_))
+                    throw std::runtime_error("Could not write CSV header.");
                 record_sample = 0; record_start = Clock::now(); last_flush = record_start;
                 first_record_sample = true;
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -100,10 +104,10 @@ void LiveSession::run(const std::string& port, unsigned baud) {
             for (const auto& batch : batches) {
                 if (writer->file) {
                     if (first_record_sample) { record_start = Clock::now(); first_record_sample = false; }
-                    for (std::size_t i = 0; i < LOG_BATCH_EMG; ++i) {
+                    for (std::size_t i = 0; i < samples_per_batch; ++i) {
                         double pc_ms = std::chrono::duration<double, std::milli>(Clock::now() - record_start).count();
                         if (!csv_writer_write_sample(writer.get(), &batch, i,
-                            record_sample * (REX_EMG_SAMPLE_PERIOD_US / 1000.0), pc_ms))
+                            record_sample * sample_period_ms, pc_ms))
                             throw std::runtime_error("CSV write failed.");
                         ++record_sample;
                     }
@@ -116,7 +120,7 @@ void LiveSession::run(const std::string& port, unsigned baud) {
                     ++status_.frames;
                     status_.bad_headers = parser.bad_headers();
                 }
-                sample += LOG_BATCH_EMG;
+                sample += samples_per_batch;
             }
             if (writer->file && Clock::now() - last_flush >= std::chrono::seconds(1)) {
                 if (!csv_writer_flush(writer.get())) throw std::runtime_error("Could not flush CSV buffer.");

@@ -8,14 +8,20 @@
 #include <cmath>
 
 namespace rex {
-ViewerUi::ViewerUi() { adopt(make_demo()); }
+ViewerUi::ViewerUi(RexLogFormat format) : format_(format), live_(format) {
+    adopt(make_demo(format_), format_ == REX_LOG_TMECH);
+}
 
-void ViewerUi::adopt(LogData data) {
+void ViewerUi::adopt(LogData data, bool torque_preview) {
     data_ = std::move(data);
     selected_.assign(data_.channels.size(), false);
     for (std::size_t c = 0; c < data_.channels.size(); ++c)
         selected_[c] = data_.channels[c].group != SignalGroup::Other;
     cache_.assign(data_.channels.size(), {});
+    torque_preview_enabled_ = torque_preview;
+    torque_preview_dirty_ = torque_preview;
+    torque_preview_ = {};
+    torque_preview_updated_at_ = -1;
     live_values_.clear();
     live_received_at_ = values_updated_at_ = -1;
     start_ = data_.seconds.empty() ? 0 : data_.seconds.front();
@@ -63,6 +69,8 @@ void ViewerUi::plot_group(SignalGroup group, const char* title, const char* unit
     if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
         ImPlot::SetupAxes("Time (s)", unit, ImPlotAxisFlags_NoMenus,
             auto_y_ ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None);
+        if (format_ == REX_LOG_TMECH && (group == SignalGroup::Angle || group == SignalGroup::Torque))
+            ImPlot::SetupLegend(ImPlotLocation_North, ImPlotLegendFlags_Outside | ImPlotLegendFlags_Horizontal);
         // 연결된 그래프는 동일한 시간 범위를 사용하며, 사용자의 이동은 다음 프레임에 공유됩니다.
         if (group == SignalGroup::Sync)
             ImPlot::SetupAxisLimits(ImAxis_Y1, -0.1, 1.1, ImPlotCond_Always);
@@ -74,7 +82,12 @@ void ViewerUi::plot_group(SignalGroup group, const char* title, const char* unit
             if (!selected_[c] || data_.channels[c].group != group) continue;
             auto& cache = cache_[c];
             if (cache.start != old_start || cache.end != old_end || cache.pixels != pixels) {
-                cache.points = visible_points(data_, c, old_start, old_end, pixels);
+                const auto preview_index = torque_preview_index(data_.channels[c].name);
+                if (torque_preview_enabled_ && preview_index < TorquePreviewChannels.size()) {
+                    cache.points = visible_points(torque_preview_, preview_index, old_start, old_end, pixels);
+                } else {
+                    cache.points = visible_points(data_, c, old_start, old_end, pixels);
+                }
                 cache.start = old_start;
                 cache.end = old_end;
                 cache.pixels = pixels;
@@ -145,13 +158,64 @@ void ViewerUi::draw_live_values() {
     }
 }
 
+void ViewerUi::draw_torque_preview_controls() {
+    if (!ImGui::CollapsingHeader("Torque display: LPF and gain", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    ImGui::TextDisabled("Display only. CSV records the received values.");
+    if (ImGui::BeginTable("Torque controls", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Sensor", ImGuiTableColumnFlags_WidthFixed, 85);
+        ImGui::TableSetupColumn("LPF cutoff");
+        ImGui::TableSetupColumn("Gain");
+        ImGui::TableHeadersRow();
+        const char* labels[] = {"Left CAN", "Right CAN", "Axial"};
+        for (std::size_t i = 0; i < torque_settings_.size(); ++i) {
+            auto& setting = torque_settings_[i];
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(labels[i]);
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - 75));
+            torque_preview_dirty_ |= ImGui::SliderInt("##Cutoff", &setting.cutoff_half_hz, 6, 40,
+                "", ImGuiSliderFlags_NoInput);
+            ImGui::SameLine();
+            ImGui::Text("%.1f Hz", setting.cutoff_half_hz * 0.5);
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - 75));
+            torque_preview_dirty_ |= ImGui::SliderInt("##Gain", &setting.gain_percent, 0, 200,
+                "", ImGuiSliderFlags_NoInput);
+            ImGui::SameLine();
+            ImGui::Text("%.2f", setting.gain_percent / 100.0);
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+}
+
+void ViewerUi::update_torque_preview() {
+    const double now = ImGui::GetTime();
+    if (!torque_preview_dirty_ ||
+        (torque_preview_updated_at_ >= 0 && now - torque_preview_updated_at_ < 0.1)) return;
+    torque_preview_ = make_torque_preview(data_, torque_settings_);
+    torque_preview_updated_at_ = now;
+    torque_preview_dirty_ = false;
+    for (std::size_t c = 0; c < cache_.size(); ++c) {
+        if (torque_preview_index(data_.channels[c].name) < TorquePreviewChannels.size())
+            cache_[c].start = -1;
+    }
+}
+
 void ViewerUi::draw(void* native_window) {
     std::vector<TimedBatch> received;
     live_status_ = live_.drain(received);
     if (live_mode_ && !received.empty()) {
-        for (const auto& timed : received) append_live_batch(data_, timed.batch, timed.first_sample);
+        for (const auto& timed : received) append_live_batch(data_, timed.batch, timed.first_sample, format_);
         live_received_at_ = ImGui::GetTime();
-        for (auto& cache : cache_) cache.start = -1;
+        torque_preview_dirty_ = torque_preview_enabled_;
+        for (std::size_t c = 0; c < cache_.size(); ++c) {
+            if (!torque_preview_enabled_ ||
+                torque_preview_index(data_.channels[c].name) == TorquePreviewChannels.size())
+                cache_[c].start = -1;
+        }
         if (follow_) start_ = data_.seconds.back() - duration_;
     }
     const bool busy = loading_.valid();
@@ -174,12 +238,15 @@ void ViewerUi::draw(void* native_window) {
     ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::Begin("Rex Data Viewer", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("REX  /  Data Explorer");
+    ImGui::TextUnformatted(format_ == REX_LOG_TMECH ? "REX / TMECH 2026 Logger" : "REX / EMG Logger");
     ImGui::Separator();
     ImGui::BeginDisabled(loading_.valid() || live_status_.running);
     if (ImGui::Button("Open CSV")) { live_mode_ = false; open(native_window); }
     ImGui::SameLine();
-    if (ImGui::Button("Demo Data")) { live_mode_ = false; adopt(make_demo()); }
+    if (ImGui::Button("Demo Data")) {
+        live_mode_ = false;
+        adopt(make_demo(format_), format_ == REX_LOG_TMECH);
+    }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(live_mode_);
@@ -208,7 +275,7 @@ void ViewerUi::draw(void* native_window) {
             for (std::size_t i = 3; i < port.size(); ++i) valid_port &= port[i] >= '0' && port[i] <= '9';
             if (!valid_port || baud_ <= 0) error_ = "Enter a port such as COM7 and a positive baud rate.";
             else {
-                adopt(make_live_data());
+                adopt(make_live_data(format_), format_ == REX_LOG_TMECH);
                 live_mode_ = true; follow_ = true; record_ = false;
                 live_.start(port, static_cast<unsigned>(baud_));
             }
@@ -259,6 +326,10 @@ void ViewerUi::draw(void* native_window) {
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("Plot Area", ImVec2(0, 0));
+    if (torque_preview_enabled_) {
+        draw_torque_preview_controls();
+        update_torque_preview();
+    }
     if (live_mode_ && show_live_values_) draw_live_values();
     ImGui::SetNextItemWidth(160);
     if (ImGui::InputDouble("Start (s)", &start_, 0.1, 1, "%.3f")) { replay_ = false; follow_ = false; }

@@ -13,7 +13,9 @@ Windows에서 Dear ImGui와 ImPlot으로 실행하는 측정 데이터 도구입
 cmake -S . -B build -G "Visual Studio 16 2019" -A x64
 cmake --build build --config Release --parallel 4
 ctest --test-dir build -C Release --output-on-failure
-.\build\Release\rex_viewer.exe
+cmake --install build --config Release --prefix "$PWD"
+.\exec\EMG\rex_viewer.exe
+.\exec\TMECH_2026\rex_tmech_viewer.exe
 ```
 
 Visual Studio 2022를 사용하면 생성기 이름을 `Visual Studio 17 2022`로 바꿉니다.
@@ -22,7 +24,7 @@ Visual Studio 2022를 사용하면 생성기 이름을 `Visual Studio 17 2022`�
 PATH에 CMake가 없다면 해당 경로를 `& '전체 경로'` 형태로 호출할 수 있습니다.
 
 뷰어 없이 기존 콘솔 로거와 테스트만 빌드하려면 구성 시 `-DREX_BUILD_VIEWER=OFF`를 붙입니다.
-콘솔 로거 실행 파일도 `build/Release/rex_logger.exe`로 함께 생성됩니다.
+콘솔 로거는 설치 후 `exec/EMG/rex_logger.exe`에서 실행할 수 있습니다.
 
 ## 파일 탐색
 
@@ -53,7 +55,7 @@ PATH에 CMake가 없다면 해당 경로를 `& '전체 경로'` 형태로 호출
 
 1. 기존 콘솔 로거 등 같은 포트를 쓰는 프로그램을 닫습니다.
 2. `COM7` 형식의 포트와 통신 속도(기본 460800)를 입력하고 `Connect MCU`을 누릅니다.
-3. 보드가 현재 프로토콜의 364바이트 프레임을 보내면 그래프가 갱신됩니다.
+3. EMG 실행 파일은 374바이트 프레임을, TMECH 실행 파일은 174바이트 프레임을 받습니다.
 4. `Record CSV`을 켜면 그 시점부터 모든 수신 샘플을 저장합니다.
 5. `Follow Latest`을 끄거나 그래프를 이동하면 현재 버퍼를 탐색할 수 있습니다.
 6. `Record CSV`을 끄거나 연결을 해제하거나 창을 닫으면 파일을 마무리합니다.
@@ -65,8 +67,9 @@ PATH에 CMake가 없다면 해당 경로를 `& '전체 경로'` 형태로 호출
 연결이 종료되거나 0.5초 동안 새 데이터가 없으면 마지막 값이라는 안내와 회색 숫자를 표시합니다.
 범위 표시는 사람이 확인하는 용도이며 모터를 자동으로 멈추지는 않습니다.
 
-화면에는 최근 60초만 유지합니다. 전체 데이터는 실행 파일 옆의 `logging/`에
-`rex_live_날짜_시각_밀리초.csv`로 저장합니다. 저장 버튼과 실제 저장 상태에는
+화면에는 최근 60초를 유지합니다. 전체 데이터는 실행 파일 옆의 `logging/`에 저장합니다.
+EMG 파일 이름은 `rex_live_날짜_시각_밀리초.csv`, TMECH 파일 이름은
+`rex_tmech_live_날짜_시각_밀리초.csv`입니다. 저장 버튼과 실제 저장 상태에는
 수신 작업 주기만큼의 짧은 지연이 있을 수 있으므로 상태와 파일 경로를 확인하세요.
 
 UART 읽기·해석·파일 쓰기는 전용 작업 스레드에서 실행합니다. GUI에는 최대 200배치의
@@ -74,6 +77,17 @@ UART 읽기·해석·파일 쓰기는 전용 작업 스레드에서 실행합니
 이 구조도 디스크나 운영체제 전체의 지연에 대한 무손실을 보장하지는 않습니다.
 쓰기 오류나 연결 오류가 발생하면 수신을 중지하고 메시지를 표시합니다.
 수신이 없을 때도 약 20 ms의 읽기 제한 시간을 두므로 연결 해제가 가능합니다.
+
+## TMECH 토크 화면 조정
+
+실시간 화면의 **Torque display: LPF and gain**에서 왼쪽 CAN, 오른쪽 CAN,
+축 토크의 설정을 각각 조절할 수 있습니다. LPF 차단 주파수는 3.0–20.0 Hz에
+0.5 Hz 간격이고, gain은 0.00–2.00에 0.01 간격입니다. 기본값은 10.0 Hz와
+1.00입니다. **Demo Data**에서도 설정을 확인할 수 있습니다.
+
+1차 LPF와 gain은 1 kHz 샘플을 이용해 표시용 곡선을 만듭니다. 곡선과 설정 적용은
+약 100 ms 간격으로 갱신합니다. CSV에는 수신한 토크의 환산값이 그대로 저장되고,
+`Open CSV`와 **Show Live Values**에는 원래 값이 표시됩니다.
 
 ## 시간과 검증 범위
 
